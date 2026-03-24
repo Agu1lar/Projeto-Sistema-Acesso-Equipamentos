@@ -6,10 +6,12 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import pandas as pd
+from banco.BancoDados import ESTRUTURA_ABAS
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, TableStyle
+from utils.planilha import carregar_todas_abas_seguras
 
 
 class Relatorios:
@@ -35,17 +37,6 @@ class Relatorios:
                 messagebox.showwarning("Aviso", "Sem dados")
                 return
             self._gerar_relatorio_tabulado(df, "GERAL")
-        except Exception as erro:
-            messagebox.showerror("Erro", str(erro))
-
-    def relatorio_por_veiculo(self, patrimonio):
-        try:
-            df = self._carregar_planilha("MANUTENCOES")
-            df = df[df["PATRIMONIO"].astype(str) == str(patrimonio)]
-            if df.empty:
-                messagebox.showwarning("Aviso", "Sem dados")
-                return
-            self._gerar_relatorio_tabulado(df, patrimonio)
         except Exception as erro:
             messagebox.showerror("Erro", str(erro))
 
@@ -87,7 +78,8 @@ class Relatorios:
             messagebox.showerror("Erro", f"Erro ao gerar relatório:\n{erro}")
 
     def _carregar_planilha(self, aba):
-        return pd.read_excel(self.arquivo, sheet_name=aba, dtype=str).fillna("")
+        abas = carregar_todas_abas_seguras(self.arquivo, ESTRUTURA_ABAS)
+        return abas.get(aba, pd.DataFrame()).fillna("")
 
     def _calcular_total(self, df):
         if "VALOR" not in df.columns:

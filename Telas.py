@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unicodedata
 from datetime import datetime
 from tkinter import messagebox, ttk
 
@@ -8,6 +7,28 @@ import customtkinter as ctk
 import pandas as pd
 
 from Relatorios import Relatorios
+from utils.ui import (
+    ACCENT,
+    BG_APP,
+    BG_CARD,
+    BG_PANEL,
+    BORDER,
+    FONT_BODY,
+    FONT_HEADING,
+    FONT_LABEL,
+    FONT_SMALL,
+    TEXT,
+    TEXT_MUTED,
+    criar_cabecalho,
+    criar_cartao_info,
+    criar_label_form,
+    criar_pagina,
+    criar_secao,
+    adicionar_tooltip,
+    estilizar_botao,
+    estilizar_combo,
+    estilizar_entry,
+)
 
 CATEGORIAS_MANUTENCAO = ["GERAL", "OLEO", "PNEUS", "MECANICA", "ELETRICA"]
 
@@ -29,14 +50,14 @@ NOMES_COLUNAS = {
     "PATRIMONIO": "Placa",
     "MARCA": "Marca",
     "ANO": "Ano",
-    "HORIMETRO": "Horímetro",
+    "HORIMETRO": "Horimetro",
     "DATA_ATUALIZACAO": "Atualizado em",
     "CATEGORIA": "Tipo",
-    "DATA_INICIO": "Data Início",
-    "DATA_FIM": "Data Fim",
+    "DATA_INICIO": "Data inicio",
+    "DATA_FIM": "Data fim",
     "VALOR": "Valor (R$)",
-    "HORIMETRO_ATUAL": "Horímetro Atual",
-    "HORIMETRO_TROCA": "Horímetro Troca",
+    "HORIMETRO_ATUAL": "Horimetro atual",
+    "HORIMETRO_TROCA": "Horimetro troca",
 }
 
 
@@ -46,23 +67,6 @@ def limpar_campos(campos):
             campo.delete(0, "end")
         elif isinstance(campo, ctk.CTkComboBox):
             campo.set("")
-
-
-def normalizar_coluna(coluna):
-    texto = str(coluna).strip().upper()
-    texto = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("ASCII")
-    return texto.replace(" ", "_")
-
-
-def carregar_df_normalizado(arquivo, aba):
-    try:
-        df = pd.read_excel(arquivo, sheet_name=aba, dtype=str).fillna("")
-    except Exception:
-        return pd.DataFrame()
-
-    df = df.loc[:, ~df.columns.astype(str).str.contains("^UNNAMED", case=False)]
-    df.columns = [normalizar_coluna(coluna) for coluna in df.columns]
-    return df.reset_index(drop=True)
 
 
 class Telas:
@@ -78,15 +82,31 @@ class Telas:
         for widget in self.frame.winfo_children():
             widget.destroy()
 
-    def criar_card(self, titulo):
-        container = ctk.CTkFrame(self.frame, fg_color="transparent")
-        container.pack(expand=True)
+    def _nova_pagina(self, titulo, descricao):
+        self.limpar()
+        pagina = criar_pagina(self.frame)
+        criar_cabecalho(pagina, titulo, descricao)
+        return pagina
 
-        card = ctk.CTkFrame(container, corner_radius=15)
-        card.pack(padx=20, pady=20)
+    def _secao_formulario(self, pagina, titulo, descricao=""):
+        _, corpo = criar_secao(pagina, titulo, descricao)
+        return corpo
 
-        ctk.CTkLabel(card, text=titulo, font=("Arial", 24, "bold")).pack(pady=20)
-        return card
+    def _campo(self, parent, row, column, label, widget):
+        criar_label_form(parent, label).grid(row=row * 2, column=column, sticky="w", padx=8, pady=(0, 6))
+        widget.grid(row=row * 2 + 1, column=column, sticky="ew", padx=8, pady=(0, 12))
+        return widget
+
+    def _acoes_horizontal(self, parent, definicoes, largura_botao=150, colunas=0):
+        barra = ctk.CTkFrame(parent, fg_color="transparent")
+        barra.pack(fill="x", pady=(2, 0))
+        for indice, (texto, comando, primario) in enumerate(definicoes):
+            linha = indice // colunas if colunas else 0
+            coluna = indice % colunas if colunas else indice
+            botao = ctk.CTkButton(barra, text=texto, command=comando, width=largura_botao)
+            estilizar_botao(botao, primario=primario)
+            botao.grid(row=linha, column=coluna, padx=(0, 10), pady=4, sticky="w")
+        return barra
 
     def _colunas_visiveis(self, aba, df):
         desejadas = COLUNAS_EXIBICAO.get(aba, list(df.columns))
@@ -95,29 +115,53 @@ class Telas:
 
     def visualizar(self, aba):
         item_selecionado = None
-        self.limpar()
-
-        container = ctk.CTkFrame(self.frame)
-        container.pack(fill="both", expand=True, padx=20, pady=20)
-
-        ctk.CTkLabel(container, text=f"DADOS - {aba}", font=("Arial", 22, "bold")).pack(pady=10)
-
-        df = carregar_df_normalizado(self.banco.arquivo, aba)
+        pagina = self._nova_pagina(f"Dados de {aba.title()}", "Consulte, filtre, edite e exporte os registros da base.")
+        df = self.banco.carregar_dataframe(aba).fillna("").copy()
         if "MES" in df.columns:
             df = df.drop(columns=["MES"])
 
         self.df_filtrado = df.copy()
         colunas_existentes = self._colunas_visiveis(aba, df)
 
-        edicao_frame = ctk.CTkFrame(container)
-        edicao_frame.pack(fill="x", pady=10)
+        metricas = ctk.CTkFrame(pagina, fg_color="transparent")
+        metricas.pack(fill="x", pady=(0, 14))
+        metricas.grid_columnconfigure((0, 1, 2), weight=1)
+        cards = [
+            ("Registros", str(len(df)), TEXT),
+            ("Colunas visiveis", str(len(colunas_existentes)), ACCENT),
+            ("Filtro ativo", "Nao", TEXT),
+        ]
+        for indice, (titulo, valor, cor) in enumerate(cards):
+            criar_cartao_info(metricas, titulo, valor, cor).grid(row=0, column=indice, sticky="nsew", padx=(0 if indice == 0 else 10, 0))
+
+        conteudo = ctk.CTkFrame(pagina, fg_color="transparent")
+        conteudo.pack(fill="both", expand=True)
+
+        lateral = ctk.CTkFrame(conteudo, fg_color="transparent", width=360)
+        lateral.pack(side="left", fill="y", padx=(0, 16))
+        lateral.pack_propagate(False)
+
+        direita = ctk.CTkFrame(conteudo, fg_color="transparent")
+        direita.pack(side="right", fill="both", expand=True)
+
+        _, edicao_corpo = criar_secao(lateral, "Edicao rapida", "Selecione um item na tabela para carregar os campos.")
+        edicao_frame = ctk.CTkScrollableFrame(
+            edicao_corpo,
+            fg_color="transparent",
+            corner_radius=0,
+            width=0,
+            height=430,
+        )
+        edicao_frame.pack(fill="both", expand=True)
+        edicao_frame.grid_columnconfigure((0, 1), weight=1)
 
         linhas_campos = [
-            ["PATRIMONIO", "CATEGORIA", "ANO"],
-            ["VALOR", "HORIMETRO_ATUAL", "HORIMETRO_TROCA"],
+            ["PATRIMONIO", "CATEGORIA"],
+            ["ANO", "VALOR"],
+            ["HORIMETRO_ATUAL", "HORIMETRO_TROCA"],
             ["SITUACAO_HORIMETRO", "SITUACAO_DATA"],
-            ["DATA_INICIO", "DATA_FIM"],
-            ["DATA"],
+            ["DATA", "DATA_INICIO"],
+            ["DATA_FIM", "DETALHE"],
         ]
         campos = {}
 
@@ -125,36 +169,90 @@ class Telas:
             for col_index, coluna in enumerate(linha):
                 if coluna not in df.columns:
                     continue
-                entry = ctk.CTkEntry(edicao_frame, placeholder_text=coluna, width=180)
-                entry.grid(row=row_index, column=col_index, padx=10, pady=8)
+                entry = estilizar_entry(ctk.CTkEntry(edicao_frame, placeholder_text=coluna))
+                self._campo(edicao_frame, row_index, col_index, NOMES_COLUNAS.get(coluna, coluna.title()), entry)
                 campos[coluna] = entry
 
-        tabela_frame = ctk.CTkFrame(container)
+        _, tabela_corpo = criar_secao(
+            direita,
+            "Tabela",
+            "Duplo clique abre os detalhes completos do registro.",
+            expand=True,
+        )
+        topo_tabela = ctk.CTkFrame(tabela_corpo, fg_color="transparent")
+        topo_tabela.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            topo_tabela,
+            text="Role na horizontal e vertical para ver todos os dados.",
+            font=FONT_SMALL,
+            text_color=TEXT_MUTED,
+        ).pack(side="left")
+        acoes_tabela = ctk.CTkFrame(topo_tabela, fg_color="transparent")
+        acoes_tabela.pack(side="right")
+        tabela_frame = ctk.CTkFrame(
+            tabela_corpo,
+            fg_color=BG_CARD,
+            corner_radius=16,
+            border_width=1,
+            border_color=BORDER,
+            height=320,
+        )
         tabela_frame.pack(fill="both", expand=True)
+        tabela_frame.pack_propagate(False)
 
-        tree = ttk.Treeview(tabela_frame, columns=colunas_existentes, show="headings")
-        scroll_y = ttk.Scrollbar(tabela_frame, orient="vertical", command=tree.yview)
-        scroll_x = ttk.Scrollbar(tabela_frame, orient="horizontal", command=tree.xview)
+        grade_tabela = ctk.CTkFrame(tabela_frame, fg_color="transparent")
+        grade_tabela.pack(fill="both", expand=True, padx=8, pady=8)
+        grade_tabela.grid_rowconfigure(0, weight=1)
+        grade_tabela.grid_columnconfigure(0, weight=1)
 
-        scroll_y.pack(side="right", fill="y")
-        scroll_x.pack(side="bottom", fill="x")
-        tree.pack(side="left", fill="both", expand=True)
+        tree = ttk.Treeview(grade_tabela, columns=colunas_existentes, show="headings", height=12)
+        scroll_y = ctk.CTkScrollbar(grade_tabela, orientation="vertical", command=tree.yview, width=14)
+        scroll_x = ctk.CTkScrollbar(grade_tabela, orientation="horizontal", command=tree.xview, height=14)
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+        scroll_x.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
 
         for coluna in colunas_existentes:
             tree.heading(coluna, text=NOMES_COLUNAS.get(coluna, coluna))
             tree.column(coluna, anchor="center", width=140)
 
+        estado_vazio = ctk.CTkLabel(
+            tabela_corpo,
+            text="Nenhum registro para exibir.",
+            font=FONT_SMALL,
+            text_color=TEXT_MUTED,
+        )
+
         def atualizar(df_filtrado):
+            nonlocal item_selecionado
             tree.delete(*tree.get_children())
             for indice, row in df_filtrado.iterrows():
                 valores = [str(row.get(coluna, "")) for coluna in colunas_existentes]
                 tree.insert("", "end", iid=str(indice), values=valores)
 
+            self.df_filtrado = df_filtrado.copy()
+            item_selecionado = None
+            cards[2] = ("Filtro ativo", "Sim" if len(df_filtrado) != len(df) else "Nao", TEXT)
+            for widget in metricas.winfo_children():
+                widget.destroy()
+            for indice, (titulo, valor, cor) in enumerate(cards):
+                criar_cartao_info(metricas, titulo, valor, cor).grid(
+                    row=0, column=indice, sticky="nsew", padx=(0 if indice == 0 else 10, 0)
+                )
+            if df_filtrado.empty:
+                estado_vazio.pack(anchor="w", pady=(8, 0))
+            else:
+                estado_vazio.pack_forget()
+
         atualizar(df)
 
         def gerar_pdf():
             self.relatorios.relatorio_filtrado(self.df_filtrado, aba)
+
+        def limpar_campos_edicao():
+            for campo in campos.values():
+                campo.delete(0, "end")
 
         def selecionar_item(_event):
             nonlocal item_selecionado
@@ -163,82 +261,130 @@ class Telas:
                 return
 
             item_selecionado = int(selecionado)
-            linha = df.iloc[item_selecionado]
+            linha = self.df_filtrado.loc[item_selecionado]
 
             for coluna, campo in campos.items():
                 campo.delete(0, "end")
                 campo.insert(0, str(linha.get(coluna, "")))
 
-        def mostrar_detalhes(_event):
-            selecionado = tree.focus()
+        def mostrar_detalhes(_event=None, origem_tree=None):
+            tree_origem = origem_tree or tree
+            selecionado = tree_origem.focus()
             if not selecionado:
                 return
 
             try:
-                linha = df.loc[int(selecionado)]
-                descricao = linha.get("DESCRICAO", "")
-                detalhe = linha.get("DETALHE", "")
-
-                janela = ctk.CTkToplevel(self.app)
-                janela.title("Detalhes da Manutenção")
-                janela.geometry("400x300")
+                linha = self.df_filtrado.loc[int(selecionado)]
+                janela = ctk.CTkToplevel(self.app, fg_color=BG_APP)
+                janela.title("Detalhes da manutencao")
+                janela.geometry("520x380")
                 janela.transient(self.app)
                 janela.grab_set()
 
-                ctk.CTkLabel(janela, text="Descrição", font=("Arial", 16, "bold")).pack(pady=5)
-                ctk.CTkLabel(janela, text=descricao, wraplength=350).pack(pady=5)
+                card = ctk.CTkFrame(janela, fg_color=BG_PANEL, corner_radius=18, border_width=1, border_color=BORDER)
+                card.pack(fill="both", expand=True, padx=20, pady=20)
+                ctk.CTkLabel(card, text="Detalhes do registro", font=FONT_HEADING, text_color=TEXT).pack(
+                    anchor="w", padx=18, pady=(18, 8)
+                )
 
-                ctk.CTkLabel(janela, text="Detalhe", font=("Arial", 16, "bold")).pack(pady=5)
-                ctk.CTkLabel(janela, text=detalhe, wraplength=350).pack(pady=5)
+                texto = ctk.CTkTextbox(card, fg_color=BG_CARD, corner_radius=12, border_width=1, border_color=BORDER, text_color=TEXT)
+                texto.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+                for coluna, valor in linha.items():
+                    texto.insert("end", f"{NOMES_COLUNAS.get(coluna, coluna)}: {valor}\n")
+                texto.configure(state="disabled")
 
-                ctk.CTkButton(janela, text="Fechar", command=janela.destroy).pack(pady=10)
+                botao = ctk.CTkButton(card, text="Fechar", command=janela.destroy, width=120)
+                estilizar_botao(botao)
+                botao.pack(anchor="e", padx=18, pady=(0, 18))
             except Exception as erro:
                 messagebox.showerror("Erro", str(erro))
 
-        tree.bind("<<TreeviewSelect>>", selecionar_item)
-        tree.bind("<Double-1>", mostrar_detalhes)
+        def abrir_tabela_ampliada():
+            janela = ctk.CTkToplevel(self.app, fg_color=BG_APP)
+            janela.title(f"Tabela ampliada - {aba.title()}")
+            janela.geometry("1200x700")
+            janela.transient(self.app)
+
+            pagina_ampliada = criar_pagina(janela)
+            criar_cabecalho(pagina_ampliada, "Tabela ampliada", "Visualizacao completa dos registros.")
+
+            quadro = ctk.CTkFrame(
+                pagina_ampliada,
+                fg_color=BG_PANEL,
+                corner_radius=18,
+                border_width=1,
+                border_color=BORDER,
+            )
+            quadro.pack(fill="both", expand=True)
+
+            area = ctk.CTkFrame(quadro, fg_color=BG_CARD, corner_radius=16)
+            area.pack(fill="both", expand=True, padx=18, pady=18)
+            area.grid_rowconfigure(0, weight=1)
+            area.grid_columnconfigure(0, weight=1)
+
+            tree_ampliada = ttk.Treeview(area, columns=colunas_existentes, show="headings")
+            scroll_y_ampliada = ctk.CTkScrollbar(area, orientation="vertical", command=tree_ampliada.yview, width=14)
+            scroll_x_ampliada = ctk.CTkScrollbar(area, orientation="horizontal", command=tree_ampliada.xview, height=14)
+            tree_ampliada.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=(8, 0))
+            scroll_y_ampliada.grid(row=0, column=1, sticky="ns", padx=(8, 8), pady=(8, 0))
+            scroll_x_ampliada.grid(row=1, column=0, sticky="ew", padx=(8, 0), pady=(8, 8))
+            tree_ampliada.configure(yscrollcommand=scroll_y_ampliada.set, xscrollcommand=scroll_x_ampliada.set)
+
+            for coluna in colunas_existentes:
+                tree_ampliada.heading(coluna, text=NOMES_COLUNAS.get(coluna, coluna))
+                tree_ampliada.column(coluna, anchor="center", width=180, minwidth=140)
+
+            for indice, row in self.df_filtrado.iterrows():
+                valores = [str(row.get(coluna, "")) for coluna in colunas_existentes]
+                tree_ampliada.insert("", "end", iid=str(indice), values=valores)
+
+            tree_ampliada.bind("<Double-1>", lambda _event: mostrar_detalhes(_event, tree_ampliada))
 
         def abrir_filtro():
-            janela = ctk.CTkToplevel(self.app)
-            janela.title("Filtro Avançado")
-            janela.geometry("420x500")
+            janela = ctk.CTkToplevel(self.app, fg_color=BG_APP)
+            janela.title("Filtro avancado")
+            janela.geometry("520x560")
             janela.transient(self.app)
             janela.grab_set()
 
-            ctk.CTkLabel(janela, text="FILTRO AVANÇADO", font=("Arial", 18, "bold")).pack(pady=10)
+            pagina_filtro = criar_pagina(janela)
+            criar_cabecalho(pagina_filtro, "Filtro avancado", "Ative apenas os criterios que deseja aplicar.")
 
             usar_patrimonio = ctk.BooleanVar()
             usar_categoria = ctk.BooleanVar()
             usar_valor = ctk.BooleanVar()
             usar_data = ctk.BooleanVar()
 
-            frame_patrimonio = ctk.CTkFrame(janela)
-            frame_patrimonio.pack(fill="x", pady=5, padx=10)
-            ctk.CTkCheckBox(frame_patrimonio, text="Filtrar por Patrimônio", variable=usar_patrimonio).pack(anchor="w")
-            patrimonio = ctk.CTkEntry(frame_patrimonio, placeholder_text="Digite a placa")
-            patrimonio.pack(fill="x", pady=5)
+            _, corpo = criar_secao(pagina_filtro, "Critetios")
+            corpo.grid_columnconfigure((0, 1), weight=1)
 
-            frame_categoria = ctk.CTkFrame(janela)
-            frame_categoria.pack(fill="x", pady=5, padx=10)
-            ctk.CTkCheckBox(frame_categoria, text="Tipo de Manutenção", variable=usar_categoria).pack(anchor="w")
-            categoria = ctk.CTkComboBox(frame_categoria, values=CATEGORIAS_MANUTENCAO)
-            categoria.pack(fill="x", pady=5)
+            frame_patrimonio = ctk.CTkFrame(corpo, fg_color="transparent")
+            frame_patrimonio.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+            ctk.CTkCheckBox(frame_patrimonio, text="Patrimonio", variable=usar_patrimonio).pack(anchor="w")
+            patrimonio = estilizar_entry(ctk.CTkEntry(frame_patrimonio, placeholder_text="Digite a placa"))
+            patrimonio.pack(fill="x", pady=(8, 0))
 
-            frame_valor = ctk.CTkFrame(janela)
-            frame_valor.pack(fill="x", pady=5, padx=10)
-            ctk.CTkCheckBox(frame_valor, text="Filtrar por Valor", variable=usar_valor).pack(anchor="w")
-            valor_min = ctk.CTkEntry(frame_valor, placeholder_text="Valor mínimo")
-            valor_min.pack(fill="x", pady=2)
-            valor_max = ctk.CTkEntry(frame_valor, placeholder_text="Valor máximo")
-            valor_max.pack(fill="x", pady=2)
+            frame_categoria = ctk.CTkFrame(corpo, fg_color="transparent")
+            frame_categoria.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
+            ctk.CTkCheckBox(frame_categoria, text="Categoria", variable=usar_categoria).pack(anchor="w")
+            categoria = estilizar_combo(ctk.CTkComboBox(frame_categoria, values=CATEGORIAS_MANUTENCAO))
+            categoria.pack(fill="x", pady=(8, 0))
 
-            frame_data = ctk.CTkFrame(janela)
-            frame_data.pack(fill="x", pady=5, padx=10)
-            ctk.CTkCheckBox(frame_data, text="Filtrar por Data", variable=usar_data).pack(anchor="w")
-            data_inicio = ctk.CTkEntry(frame_data, placeholder_text="Data início (dd/mm/aaaa)")
-            data_inicio.pack(fill="x", pady=2)
-            data_fim = ctk.CTkEntry(frame_data, placeholder_text="Data fim (dd/mm/aaaa)")
-            data_fim.pack(fill="x", pady=2)
+            frame_valor = ctk.CTkFrame(corpo, fg_color="transparent")
+            frame_valor.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
+            ctk.CTkCheckBox(frame_valor, text="Faixa de valor", variable=usar_valor).pack(anchor="w")
+            valor_min = estilizar_entry(ctk.CTkEntry(frame_valor, placeholder_text="Valor minimo"))
+            valor_min.pack(fill="x", pady=(8, 8))
+            valor_max = estilizar_entry(ctk.CTkEntry(frame_valor, placeholder_text="Valor maximo"))
+            valor_max.pack(fill="x")
+
+            frame_data = ctk.CTkFrame(corpo, fg_color="transparent")
+            frame_data.grid(row=1, column=1, sticky="nsew", padx=8, pady=8)
+            ctk.CTkCheckBox(frame_data, text="Periodo", variable=usar_data).pack(anchor="w")
+            data_inicio = estilizar_entry(ctk.CTkEntry(frame_data, placeholder_text="Inicio (dd/mm/aaaa)"))
+            data_inicio.pack(fill="x", pady=(8, 8))
+            data_fim = estilizar_entry(ctk.CTkEntry(frame_data, placeholder_text="Fim (dd/mm/aaaa)"))
+            data_fim.pack(fill="x")
 
             def aplicar_filtro():
                 df_filtrado = df.copy()
@@ -273,16 +419,30 @@ class Telas:
                         fim = pd.to_datetime(data_fim.get(), dayfirst=True, errors="coerce")
                         df_filtrado = df_filtrado[serie_data <= fim]
 
-                self.df_filtrado = df_filtrado
                 atualizar(df_filtrado)
+                limpar_campos_edicao()
                 janela.destroy()
 
-            ctk.CTkButton(janela, text="Aplicar Filtros", command=aplicar_filtro).pack(pady=15)
-            ctk.CTkButton(
-                janela,
-                text="Limpar Filtro",
-                command=lambda: (setattr(self, "df_filtrado", df.copy()), atualizar(df), janela.destroy()),
-            ).pack(pady=5)
+            self._acoes_horizontal(
+                pagina_filtro,
+                [
+                    ("Aplicar filtros", aplicar_filtro, True),
+                    ("Limpar", lambda: (atualizar(df), limpar_campos_edicao(), janela.destroy()), False),
+                ],
+            )
+
+        botao_filtrar = ctk.CTkButton(acoes_tabela, text="⚲", command=abrir_filtro, width=36, height=32)
+        estilizar_botao(botao_filtrar)
+        botao_filtrar.pack(side="left", padx=(0, 8))
+        adicionar_tooltip(botao_filtrar, "Filtrar")
+
+        botao_expandir = ctk.CTkButton(acoes_tabela, text="⛶", command=abrir_tabela_ampliada, width=36, height=32)
+        estilizar_botao(botao_expandir)
+        botao_expandir.pack(side="left")
+        adicionar_tooltip(botao_expandir, "Ampliar")
+
+        tree.bind("<<TreeviewSelect>>", selecionar_item)
+        tree.bind("<Double-1>", mostrar_detalhes)
 
         def editar():
             nonlocal item_selecionado
@@ -301,11 +461,11 @@ class Telas:
                         alterou = True
 
                 if not alterou:
-                    messagebox.showinfo("Aviso", "Nenhuma alteração feita")
+                    messagebox.showinfo("Aviso", "Nenhuma alteracao feita")
                     return
 
                 self.banco.escrever_aba(aba, df_edit)
-                messagebox.showinfo("Sucesso", "Atualizado!")
+                messagebox.showinfo("Sucesso", "Registro atualizado com sucesso.")
                 item_selecionado = None
                 self.visualizar(aba)
             except Exception as erro:
@@ -316,47 +476,53 @@ class Telas:
             if item_selecionado is None:
                 messagebox.showwarning("Aviso", "Selecione um item")
                 return
-            if not messagebox.askyesno("Confirmação", "Deseja excluir?"):
+            if not messagebox.askyesno("Confirmacao", "Deseja excluir o registro selecionado?"):
                 return
 
             try:
                 df_edit = self.banco.carregar_dataframe(aba).drop(index=int(item_selecionado))
                 self.banco.escrever_aba(aba, df_edit.reset_index(drop=True))
-                messagebox.showinfo("Sucesso", "Excluído!")
+                messagebox.showinfo("Sucesso", "Registro excluido.")
                 self.visualizar(aba)
             except Exception as erro:
                 messagebox.showerror("Erro", str(erro))
 
-        botoes = ctk.CTkFrame(container)
-        botoes.pack(pady=10)
+        self._acoes_horizontal(
+            lateral,
+            [
+                ("Gerar PDF", gerar_pdf, True),
+                ("Salvar", editar, False),
+                ("Excluir", excluir, False),
+                ("Voltar", self.voltar_menu, False),
+            ],
+            largura_botao=150 if aba == "MANUTENCOES" else 130,
+            colunas=2,
+        )
 
-        ctk.CTkButton(botoes, text="Filtrar", command=abrir_filtro).grid(row=0, column=0, padx=5)
-        ctk.CTkButton(botoes, text="PDF", command=gerar_pdf).grid(row=0, column=1, padx=5)
-        ctk.CTkButton(botoes, text="Editar", command=editar).grid(row=0, column=2, padx=5)
-        ctk.CTkButton(botoes, text="Excluir", command=excluir).grid(row=0, column=3, padx=5)
-        ctk.CTkButton(botoes, text="Voltar", command=self.voltar_menu).grid(row=0, column=4, padx=5)
 
     def tela_veiculos(self):
-        self.limpar()
-        card = self.criar_card("VEÍCULOS")
+        pagina = self._nova_pagina("Cadastro de veiculos", "Registre novos ativos e mantenha os dados principais atualizados.")
+        corpo = self._secao_formulario(pagina, "Dados do veiculo")
+        corpo.grid_columnconfigure((0, 1), weight=1)
 
-        patrimonio = ctk.CTkEntry(card, placeholder_text="Patrimônio")
-        patrimonio.pack(pady=5)
-        marca = ctk.CTkEntry(card, placeholder_text="Marca")
-        marca.pack(pady=5)
-        ano = ctk.CTkEntry(card, placeholder_text="Ano")
-        ano.pack(pady=5)
-        obs = ctk.CTkEntry(card, placeholder_text="Observações")
-        obs.pack(pady=5)
+        patrimonio = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Ex.: ABC1234"))
+        marca = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Marca do veiculo"))
+        ano = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Ano"))
+        obs = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Observacoes relevantes"))
+
+        self._campo(corpo, 0, 0, "Patrimonio", patrimonio)
+        self._campo(corpo, 0, 1, "Marca", marca)
+        self._campo(corpo, 1, 0, "Ano", ano)
+        self._campo(corpo, 1, 1, "Observacoes", obs)
 
         def salvar(_event=None):
             if not patrimonio.get().strip():
-                messagebox.showwarning("Aviso", "Patrimônio obrigatório")
+                messagebox.showwarning("Aviso", "Patrimonio obrigatorio")
                 patrimonio.focus()
                 return
 
             if ano.get() and not ano.get().isdigit():
-                messagebox.showerror("Erro", "Ano deve ser numérico")
+                messagebox.showerror("Erro", "Ano deve ser numerico")
                 return
 
             dados = {
@@ -369,70 +535,78 @@ class Telas:
             }
 
             self.banco.salvar("VEICULOS", dados)
-            messagebox.showinfo("Sucesso", "Salvo!")
+            messagebox.showinfo("Sucesso", "Veiculo salvo com sucesso.")
             limpar_campos([patrimonio, marca, ano, obs])
             patrimonio.focus()
 
-        card.bind("<Return>", salvar)
+        pagina.bind("<Return>", salvar)
 
-        ctk.CTkButton(card, text="Salvar", command=salvar).pack(pady=10)
-        ctk.CTkButton(card, text="Visualizar", command=lambda: self.visualizar("VEICULOS")).pack(pady=5)
-        ctk.CTkButton(card, text="Ver Manutenções", command=lambda: self.visualizar("MANUTENCOES")).pack(pady=5)
-        ctk.CTkButton(card, text="Voltar", command=self.voltar_menu).pack(pady=10)
+        self._acoes_horizontal(
+            pagina,
+            [
+                ("Salvar", salvar, True),
+                ("Visualizar base", lambda: self.visualizar("VEICULOS"), False),
+                ("Ver manutencoes", lambda: self.visualizar("MANUTENCOES"), False),
+                ("Voltar", self.voltar_menu, False),
+            ],
+        )
 
     def tela_manutencao(self):
-        self.limpar()
-        card = self.criar_card("MANUTENÇÕES")
+        pagina = self._nova_pagina("Cadastro de manutencao", "Lance manutencoes preventivas e corretivas sem depender de edicao manual na planilha.")
+        corpo = self._secao_formulario(pagina, "Dados da manutencao")
+        corpo.grid_columnconfigure((0, 1, 2), weight=1)
 
-        patrimonio = ctk.CTkEntry(card, placeholder_text="Patrimônio")
-        patrimonio.pack(pady=5)
-        descricao = ctk.CTkEntry(card, placeholder_text="Descrição")
-        descricao.pack(pady=5)
-        data_inicio = ctk.CTkEntry(card, placeholder_text="Data início")
-        data_inicio.pack(pady=5)
-        data_fim = ctk.CTkEntry(card, placeholder_text="Data fim")
-        data_fim.pack(pady=5)
-        detalhe = ctk.CTkEntry(card, placeholder_text="Detalhe da manutenção")
-        detalhe.pack(pady=5)
-        horimetro = ctk.CTkEntry(card, placeholder_text="Horímetro atual")
-        horimetro.pack(pady=5)
-        horimetro_troca = ctk.CTkEntry(card, placeholder_text="Horímetro para troca")
-        horimetro_troca.pack(pady=5)
-        categoria = ctk.CTkComboBox(card, values=CATEGORIAS_MANUTENCAO)
-        categoria.pack(pady=5)
+        patrimonio = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Patrimonio"))
+        descricao = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Descricao"))
+        categoria = estilizar_combo(ctk.CTkComboBox(corpo, values=CATEGORIAS_MANUTENCAO))
         categoria.set("GERAL")
-        valor = ctk.CTkEntry(card, placeholder_text="Valor")
-        valor.pack(pady=5)
+        valor = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="0,00"))
+        horimetro = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Horimetro atual"))
+        horimetro_troca = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Horimetro para troca"))
+        data_inicio = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="dd/mm/aaaa"))
+        data_fim = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="dd/mm/aaaa"))
+        detalhe = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="Detalhamento da atividade"))
+
+        self._campo(corpo, 0, 0, "Patrimonio", patrimonio)
+        self._campo(corpo, 0, 1, "Descricao", descricao)
+        self._campo(corpo, 0, 2, "Categoria", categoria)
+        self._campo(corpo, 1, 0, "Valor", valor)
+        self._campo(corpo, 1, 1, "Horimetro atual", horimetro)
+        self._campo(corpo, 1, 2, "Horimetro de troca", horimetro_troca)
+        self._campo(corpo, 2, 0, "Data inicio", data_inicio)
+        self._campo(corpo, 2, 1, "Data fim", data_fim)
+        self._campo(corpo, 2, 2, "Detalhe", detalhe)
 
         def atualizar_campos(opcao):
-            if opcao == "GERAL":
-                horimetro.pack(pady=5)
-                horimetro_troca.pack(pady=5)
-                valor.pack(pady=5)
-                data_inicio.pack_forget()
-                data_fim.pack_forget()
-                return
+            manutencao_geral = opcao == "GERAL"
+            for widget in [horimetro, horimetro_troca, valor]:
+                if manutencao_geral:
+                    widget.configure(state="normal")
+                else:
+                    widget.delete(0, "end")
+                    widget.configure(state="disabled")
 
-            horimetro.pack_forget()
-            horimetro_troca.pack_forget()
-            valor.pack_forget()
-            data_inicio.pack(pady=5)
-            data_fim.pack(pady=5)
+            for widget in [data_inicio, data_fim]:
+                if manutencao_geral:
+                    widget.delete(0, "end")
+                    widget.configure(state="disabled")
+                else:
+                    widget.configure(state="normal")
 
         categoria.configure(command=atualizar_campos)
         atualizar_campos(categoria.get())
 
         def salvar(_event=None):
             if not patrimonio.get().strip():
-                messagebox.showwarning("Aviso", "Patrimônio obrigatório")
+                messagebox.showwarning("Aviso", "Patrimonio obrigatorio")
                 return
 
             try:
-                valor_convertido = float(valor.get()) if valor.get() else 0
-                horimetro_atual = float(horimetro.get()) if horimetro.get() else 0
-                horimetro_troca_valor = float(horimetro_troca.get()) if horimetro_troca.get() else 0
+                valor_convertido = float(valor.get().replace(",", ".")) if valor.get() else 0
+                horimetro_atual = float(horimetro.get().replace(",", ".")) if horimetro.get() else 0
+                horimetro_troca_valor = float(horimetro_troca.get().replace(",", ".")) if horimetro_troca.get() else 0
             except ValueError:
-                messagebox.showerror("Erro", "Valores numéricos inválidos")
+                messagebox.showerror("Erro", "Valores numericos invalidos")
                 return
 
             situacao_horimetro = "ATRASADO" if horimetro_atual - horimetro_troca_valor >= 0 else "EM DIA"
@@ -457,66 +631,67 @@ class Telas:
             }
 
             self.banco.salvar("MANUTENCOES", dados)
-            messagebox.showinfo("Sucesso", "Salvo!")
-            limpar_campos([patrimonio, descricao, categoria, valor, horimetro, horimetro_troca, detalhe])
+            messagebox.showinfo("Sucesso", "Manutencao salva com sucesso.")
+            limpar_campos([patrimonio, descricao, categoria, valor, horimetro, horimetro_troca, detalhe, data_inicio, data_fim])
             categoria.set("GERAL")
             atualizar_campos("GERAL")
 
-        card.bind("<Return>", salvar)
+        pagina.bind("<Return>", salvar)
 
-        ctk.CTkButton(card, text="Salvar", command=salvar).pack(pady=10)
-        ctk.CTkButton(card, text="Visualizar", command=lambda: self.visualizar("MANUTENCOES")).pack(pady=5)
-        ctk.CTkButton(card, text="Voltar", command=self.voltar_menu).pack(pady=10)
-
-    def tela_relatorio_veiculo(self):
-        self.limpar()
-        card = self.criar_card("RELATÓRIO POR VEÍCULO")
-        veiculos = self.banco.carregar_veiculos()
-        combo = ctk.CTkComboBox(card, values=veiculos)
-        combo.pack(pady=10)
-
-        def gerar():
-            if not combo.get():
-                messagebox.showwarning("Aviso", "Selecione um veículo")
-                return
-            self.relatorios.relatorio_por_veiculo(combo.get())
-
-        ctk.CTkButton(card, text="Gerar PDF", command=gerar).pack(pady=10)
-        ctk.CTkButton(card, text="Voltar", command=self.voltar_menu).pack(pady=10)
+        self._acoes_horizontal(
+            pagina,
+            [
+                ("Salvar", salvar, True),
+                ("Visualizar base", lambda: self.visualizar("MANUTENCOES"), False),
+                ("Voltar", self.voltar_menu, False),
+            ],
+        )
 
     def tela_relatorios_manutencao(self):
-        self.limpar()
-        card = self.criar_card("RELATÓRIOS DE MANUTENÇÃO")
+        pagina = self._nova_pagina("Relatorios de manutencao", "Gere relatorios por categoria ou um consolidado geral.")
 
-        for categoria in ["ELETRICA", "MECANICA", "OLEO", "PNEUS"]:
-            ctk.CTkButton(
+        linha = ctk.CTkFrame(pagina, fg_color="transparent")
+        linha.pack(fill="both", expand=True)
+        linha.grid_columnconfigure((0, 1), weight=1)
+
+        categorias = [("Eletrica", "ELETRICA"), ("Mecanica", "MECANICA"), ("Oleo", "OLEO"), ("Pneus", "PNEUS")]
+        for indice, (titulo, categoria) in enumerate(categorias):
+            card = ctk.CTkFrame(linha, fg_color=BG_PANEL, corner_radius=18, border_width=1, border_color=BORDER)
+            card.grid(row=indice // 2, column=indice % 2, sticky="nsew", padx=8, pady=8)
+            ctk.CTkLabel(card, text=titulo, font=FONT_HEADING, text_color=TEXT).pack(anchor="w", padx=16, pady=(16, 6))
+            ctk.CTkLabel(
                 card,
-                text=f"Manutenção {categoria.title()}",
-                command=lambda cat=categoria: self.tela_filtro_relatorio(cat),
-            ).pack(pady=5)
+                text=f"Filtre o periodo e o veiculo para gerar o relatorio de {titulo.lower()}.",
+                font=FONT_SMALL,
+                text_color=TEXT_MUTED,
+                wraplength=320,
+                justify="left",
+            ).pack(anchor="w", padx=16)
+            botao = ctk.CTkButton(card, text="Abrir filtro", command=lambda cat=categoria: self.tela_filtro_relatorio(cat), width=150)
+            estilizar_botao(botao)
+            botao.pack(anchor="w", padx=16, pady=16)
 
-        ctk.CTkButton(card, text="Relatório Geral", command=self.relatorios.relatorio_manutencoes).pack(pady=10)
-        ctk.CTkButton(card, text="Voltar", command=self.voltar_menu).pack(pady=10)
+        self._acoes_horizontal(
+            pagina,
+            [("Relatorio geral", self.relatorios.relatorio_manutencoes, True), ("Voltar", self.voltar_menu, False)],
+        )
 
     def tela_filtro_relatorio(self, categoria):
-        self.limpar()
-        card = self.criar_card(f"RELATÓRIO DE {categoria.upper()}")
+        pagina = self._nova_pagina(f"Relatorio de {categoria.lower()}", "Defina os filtros antes de exportar o PDF.")
+        corpo = self._secao_formulario(pagina, "Filtros")
+        corpo.grid_columnconfigure((0, 1, 2), weight=1)
 
-        ctk.CTkLabel(card, text="Data Inicial").pack()
-        data_inicio = ctk.CTkEntry(card)
-        data_inicio.pack(pady=5)
+        data_inicio = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="dd/mm/aaaa"))
+        data_fim = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text="dd/mm/aaaa"))
+        combo = estilizar_combo(ctk.CTkComboBox(corpo, values=self.banco.carregar_veiculos()))
 
-        ctk.CTkLabel(card, text="Data Final").pack()
-        data_fim = ctk.CTkEntry(card)
-        data_fim.pack(pady=5)
-
-        ctk.CTkLabel(card, text="Veículo").pack()
-        combo = ctk.CTkComboBox(card, values=self.banco.carregar_veiculos())
-        combo.pack(pady=5)
+        self._campo(corpo, 0, 0, "Data inicial", data_inicio)
+        self._campo(corpo, 0, 1, "Data final", data_fim)
+        self._campo(corpo, 0, 2, "Veiculo", combo)
 
         def gerar():
             try:
-                df = carregar_df_normalizado(self.banco.arquivo, "MANUTENCOES")
+                df = self.banco.carregar_dataframe("MANUTENCOES").fillna("").copy()
                 df = df[df["CATEGORIA"].astype(str).str.upper() == categoria.upper()]
 
                 if "DATA" in df.columns:
@@ -536,5 +711,7 @@ class Telas:
             except Exception as erro:
                 messagebox.showerror("Erro", str(erro))
 
-        ctk.CTkButton(card, text="GERAR RELATÓRIO", command=gerar).pack(pady=10)
-        ctk.CTkButton(card, text="CANCELAR", command=self.voltar_menu).pack(pady=5)
+        self._acoes_horizontal(
+            pagina,
+            [("Gerar relatorio", gerar, True), ("Voltar", self.voltar_menu, False)],
+        )

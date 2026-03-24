@@ -14,6 +14,22 @@ from services.service_relatorios_fotograficos import (
     obter_pasta_base,
     salvar_pasta_base,
 )
+from utils.ui import (
+    ACCENT,
+    BG_CARD,
+    BORDER,
+    FONT_HEADING,
+    FONT_SMALL,
+    TEXT,
+    TEXT_MUTED,
+    criar_cabecalho,
+    criar_cartao_info,
+    criar_label_form,
+    criar_pagina,
+    criar_secao,
+    estilizar_botao,
+    estilizar_entry,
+)
 
 
 class TelaRelatorioFotografico:
@@ -29,122 +45,169 @@ class TelaRelatorioFotografico:
 
     def abrir(self):
         self.limpar()
+        pagina = criar_pagina(self.frame)
+        criar_cabecalho(
+            pagina,
+            "Relatorio fotografico",
+            "Monte o documento visual, salve por modelo e consulte o historico sem sair da aplicacao.",
+        )
+        conteudo = ctk.CTkScrollableFrame(pagina, fg_color="transparent", corner_radius=0)
+        conteudo.pack(fill="both", expand=True)
 
-        container = ctk.CTkFrame(self.frame)
-        container.pack(fill="both", expand=True, padx=20, pady=20)
+        metricas = ctk.CTkFrame(conteudo, fg_color="transparent")
+        metricas.pack(fill="x", pady=(0, 16))
+        metricas.grid_columnconfigure((0, 1, 2), weight=1)
 
-        ctk.CTkLabel(
-            container,
-            text="RELATÓRIO FOTOGRÁFICO",
-            font=("Arial", 22, "bold"),
-        ).pack(pady=10)
+        infos = [
+            ("Imagens selecionadas", str(len(self.imagens_selecionadas)), TEXT),
+            ("Pasta base", "Configurada", ACCENT),
+            ("Relatorios salvos", str(len(listar_relatorios())), TEXT),
+        ]
+        for indice, (titulo, valor, cor) in enumerate(infos):
+            criar_cartao_info(metricas, titulo, valor, cor).grid(
+                row=0, column=indice, sticky="nsew", padx=(0 if indice == 0 else 10, 0)
+            )
 
-        for placeholder, chave in [
-            ("Cliente", "cliente"),
-            ("Obra", "obra"),
-            ("Contrato", "contrato"),
-            ("Equipamento", "equipamento"),
-            ("Modelo", "modelo"),
-            ("Patrimônio", "patrimonio"),
-            ("Número de Série", "serie"),
-        ]:
-            campo = ctk.CTkEntry(container, placeholder_text=placeholder, width=320)
-            campo.pack(pady=5)
+        _, corpo = criar_secao(conteudo, "Dados do relatorio", "Preencha os campos principais e selecione as imagens.")
+        corpo.grid_columnconfigure((0, 1), weight=1)
+
+        for indice, (placeholder, chave) in enumerate(
+            [
+                ("Cliente", "cliente"),
+                ("Obra", "obra"),
+                ("Contrato", "contrato"),
+                ("Equipamento", "equipamento"),
+                ("Modelo", "modelo"),
+                ("Patrimonio", "patrimonio"),
+                ("Numero de serie", "serie"),
+            ]
+        ):
+            row = indice // 2
+            col = indice % 2
+            criar_label_form(corpo, placeholder).grid(row=row * 2, column=col, sticky="w", padx=8, pady=(0, 6))
+            campo = estilizar_entry(ctk.CTkEntry(corpo, placeholder_text=placeholder))
+            campo.grid(row=row * 2 + 1, column=col, sticky="ew", padx=8, pady=(0, 12))
             self.campos[chave] = campo
 
-        info_pasta = f"Pasta base: {obter_pasta_base()}"
-        self.label_pasta = ctk.CTkLabel(container, text=info_pasta, wraplength=700)
-        self.label_pasta.pack(pady=(10, 4))
-
+        utilitarios = ctk.CTkFrame(corpo, fg_color=BG_CARD, corner_radius=16, border_width=1, border_color=BORDER)
+        utilitarios.grid(row=8, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 12))
+        ctk.CTkLabel(utilitarios, text=f"Pasta base atual: {obter_pasta_base()}", text_color=TEXT_MUTED, wraplength=820).pack(
+            anchor="w", padx=14, pady=(12, 6)
+        )
         ctk.CTkCheckBox(
-            container,
+            utilitarios,
             text="Salvar automaticamente na pasta do modelo",
             variable=self.salvar_automatico,
-        ).pack(pady=4)
+        ).pack(anchor="w", padx=14, pady=(0, 12))
 
-        acoes = ctk.CTkFrame(container, fg_color="transparent")
-        acoes.pack(pady=6)
+        botoes_util = ctk.CTkFrame(utilitarios, fg_color="transparent")
+        botoes_util.pack(anchor="w", padx=14, pady=(0, 12))
+        for indice, (texto, comando, primario) in enumerate(
+            [
+                ("Definir pasta base", self.definir_pasta_base, False),
+                ("Pesquisar relatorios", self.abrir_pesquisa, False),
+            ]
+        ):
+            botao = ctk.CTkButton(botoes_util, text=texto, command=comando, width=180)
+            estilizar_botao(botao, primario=primario)
+            botao.grid(row=0, column=indice, padx=(0, 10))
 
-        ctk.CTkButton(acoes, text="Definir Pasta Base", command=self.definir_pasta_base).grid(row=0, column=0, padx=5)
-        ctk.CTkButton(acoes, text="Pesquisar Relatórios", command=self.abrir_pesquisa).grid(row=0, column=1, padx=5)
+        _, imagens_corpo = criar_secao(conteudo, "Imagens", "As imagens selecionadas serao copiadas para a pasta do contrato.")
+        self.label_imagens = ctk.CTkLabel(
+            imagens_corpo,
+            text="Nenhuma imagem selecionada",
+            text_color=TEXT_MUTED,
+            font=FONT_SMALL,
+        )
+        self.label_imagens.pack(anchor="w", pady=(0, 12))
 
-        self.label_imagens = ctk.CTkLabel(container, text="Nenhuma imagem selecionada")
-        self.label_imagens.pack(pady=10)
-
-        ctk.CTkButton(
-            container,
-            text="Selecionar Imagens",
-            command=self.selecionar_imagens,
-        ).pack(pady=5)
-
-        ctk.CTkButton(
-            container,
-            text="Gerar Relatório",
-            command=self.gerar,
-        ).pack(pady=10)
-
-        ctk.CTkButton(
-            container,
-            text="Voltar",
-            command=self.voltar_menu,
-        ).pack(pady=10)
+        barra = ctk.CTkFrame(imagens_corpo, fg_color="transparent")
+        barra.pack(fill="x")
+        for indice, (texto, comando, primario) in enumerate(
+            [
+                ("Selecionar imagens", self.selecionar_imagens, False),
+                ("Gerar relatorio", self.gerar, True),
+                ("Voltar", self.voltar_menu, False),
+            ]
+        ):
+            botao = ctk.CTkButton(barra, text=texto, command=comando, width=170)
+            estilizar_botao(botao, primario=primario)
+            botao.grid(row=0, column=indice, padx=(0, 10), pady=4)
 
     def abrir_pesquisa(self):
         self.limpar()
+        pagina = criar_pagina(self.frame)
+        criar_cabecalho(
+            pagina,
+            "Pesquisa de relatorios fotograficos",
+            "Busque por modelo, por data ou apenas por data para listar tudo daquele dia.",
+        )
 
-        container = ctk.CTkFrame(self.frame)
-        container.pack(fill="both", expand=True, padx=20, pady=20)
+        _, filtros = criar_secao(pagina, "Filtros")
+        filtros.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
-        ctk.CTkLabel(
-            container,
-            text="PESQUISA DE RELATÓRIOS",
-            font=("Arial", 22, "bold"),
-        ).pack(pady=10)
+        criar_label_form(filtros, "Modelo").grid(row=0, column=0, sticky="w", padx=8, pady=(0, 6))
+        self.filtro_modelo = estilizar_entry(ctk.CTkEntry(filtros, placeholder_text="Modelo"))
+        self.filtro_modelo.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 12))
 
-        filtros = ctk.CTkFrame(container)
-        filtros.pack(fill="x", padx=10, pady=10)
+        criar_label_form(filtros, "Data").grid(row=0, column=1, sticky="w", padx=8, pady=(0, 6))
+        self.filtro_data = estilizar_entry(ctk.CTkEntry(filtros, placeholder_text="dd/mm/aaaa"))
+        self.filtro_data.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 12))
 
-        self.filtro_modelo = ctk.CTkEntry(filtros, placeholder_text="Modelo", width=250)
-        self.filtro_modelo.grid(row=0, column=0, padx=5, pady=5)
-
-        self.filtro_data = ctk.CTkEntry(filtros, placeholder_text="Data (dd/mm/aaaa)", width=180)
-        self.filtro_data.grid(row=0, column=1, padx=5, pady=5)
-
-        ctk.CTkButton(filtros, text="Buscar", command=self.buscar_relatorios).grid(row=0, column=2, padx=5, pady=5)
-        ctk.CTkButton(filtros, text="Limpar", command=self.limpar_filtros_relatorios).grid(row=0, column=3, padx=5, pady=5)
-        ctk.CTkButton(filtros, text="Abrir Tela de Geração", command=self.abrir).grid(row=0, column=4, padx=5, pady=5)
+        for indice, (texto, comando, primario) in enumerate(
+            [
+                ("Buscar", self.buscar_relatorios, True),
+                ("Limpar", self.limpar_filtros_relatorios, False),
+                ("Nova geracao", self.abrir, False),
+                ("Voltar", self.voltar_menu, False),
+            ],
+            start=2,
+        ):
+            botao = ctk.CTkButton(filtros, text=texto, command=comando, width=140)
+            estilizar_botao(botao, primario=primario)
+            botao.grid(row=1, column=indice, padx=8, pady=(0, 12), sticky="ew")
 
         self.label_resultado = ctk.CTkLabel(
-            container,
-            text="Filtre por modelo, por data ou apenas por data para ver todos os relatórios do dia.",
+            pagina,
+            text="Nenhuma busca executada.",
+            text_color=TEXT_MUTED,
+            font=FONT_SMALL,
         )
-        self.label_resultado.pack(pady=5)
+        self.label_resultado.pack(anchor="w", pady=(0, 10))
 
-        tabela_frame = ctk.CTkFrame(container)
-        tabela_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        _, tabela_corpo = criar_secao(pagina, "Resultados", expand=True)
+        tabela_frame = ctk.CTkFrame(
+            tabela_corpo,
+            fg_color=BG_CARD,
+            corner_radius=16,
+            border_width=1,
+            border_color=BORDER,
+            height=320,
+        )
+        tabela_frame.pack(fill="both", expand=True)
+        tabela_frame.pack_propagate(False)
 
-        colunas = ("modelo", "data", "arquivo")
-        self.tree_relatorios = ttk.Treeview(tabela_frame, columns=colunas, show="headings")
-        self.tree_relatorios.heading("modelo", text="Modelo")
-        self.tree_relatorios.heading("data", text="Data")
-        self.tree_relatorios.heading("arquivo", text="Arquivo")
-        self.tree_relatorios.column("modelo", width=180, anchor="center")
-        self.tree_relatorios.column("data", width=140, anchor="center")
-        self.tree_relatorios.column("arquivo", width=360, anchor="w")
-        self.tree_relatorios.pack(side="left", fill="both", expand=True)
+        self.tree_relatorios = ttk.Treeview(tabela_frame, columns=("modelo", "data", "arquivo"), show="headings", height=12)
+        for coluna, titulo, largura, anchor in [
+            ("modelo", "Modelo", 180, "center"),
+            ("data", "Data", 160, "center"),
+            ("arquivo", "Arquivo", 420, "w"),
+        ]:
+            self.tree_relatorios.heading(coluna, text=titulo)
+            self.tree_relatorios.column(coluna, width=largura, anchor=anchor)
+
+        self.tree_relatorios.pack(side="left", fill="both", expand=True, padx=8, pady=8)
         self.tree_relatorios.bind("<Double-1>", self.abrir_relatorio_selecionado)
 
         scroll_y = ttk.Scrollbar(tabela_frame, orient="vertical", command=self.tree_relatorios.yview)
-        scroll_y.pack(side="right", fill="y")
+        scroll_y.pack(side="right", fill="y", pady=8)
         self.tree_relatorios.configure(yscrollcommand=scroll_y.set)
 
-        botoes = ctk.CTkFrame(container, fg_color="transparent")
-        botoes.pack(pady=5)
-
-        ctk.CTkButton(botoes, text="Abrir Selecionado", command=self.abrir_relatorio_selecionado).grid(
-            row=0, column=0, padx=5
-        )
-        ctk.CTkButton(botoes, text="Voltar", command=self.voltar_menu).grid(row=0, column=1, padx=5)
+        rodape = ctk.CTkFrame(pagina, fg_color="transparent")
+        rodape.pack(fill="x", pady=(10, 0))
+        botao = ctk.CTkButton(rodape, text="Abrir selecionado", command=self.abrir_relatorio_selecionado, width=180)
+        estilizar_botao(botao, primario=True)
+        botao.pack(anchor="w")
 
         self.buscar_relatorios()
 
@@ -164,13 +227,13 @@ class TelaRelatorioFotografico:
         self.label_imagens.configure(text=f"{len(caminhos)} imagem(ns) selecionada(s)")
 
     def definir_pasta_base(self):
-        pasta = filedialog.askdirectory(title="Escolha a pasta base dos relatórios por modelo")
+        pasta = filedialog.askdirectory(title="Escolha a pasta base dos relatorios por modelo")
         if not pasta:
             return
 
         salvar_pasta_base(pasta)
-        self.label_pasta.configure(text=f"Pasta base: {obter_pasta_base()}")
         messagebox.showinfo("Sucesso", "Pasta base salva com sucesso.")
+        self.abrir()
 
     def gerar(self):
         contrato = self.campos["contrato"].get().strip()
@@ -179,11 +242,9 @@ class TelaRelatorioFotografico:
         if not contrato:
             messagebox.showwarning("Aviso", "Informe o contrato")
             return
-
         if not modelo:
-            messagebox.showwarning("Aviso", "Informe o modelo da máquina")
+            messagebox.showwarning("Aviso", "Informe o modelo da maquina")
             return
-
         if not self.imagens_selecionadas:
             messagebox.showwarning("Aviso", "Selecione imagens")
             return
@@ -194,14 +255,13 @@ class TelaRelatorioFotografico:
             "Contrato": contrato,
             "Equipamento": self.campos["equipamento"].get().strip(),
             "Modelo": modelo,
-            "Série": self.campos["serie"].get().strip(),
-            "Patrimônio": self.campos["patrimonio"].get().strip(),
+            "Serie": self.campos["serie"].get().strip(),
+            "Patrimonio": self.campos["patrimonio"].get().strip(),
             "Data": datetime.now().strftime("%d/%m/%Y"),
         }
 
         try:
             imagens_salvas = salvar_imagens(self.imagens_selecionadas, contrato)
-
             if self.salvar_automatico.get():
                 caminho_pdf = caminho_pdf_modelo(modelo, contrato, datetime.now())
             else:
@@ -210,14 +270,13 @@ class TelaRelatorioFotografico:
                     defaultextension=".pdf",
                     initialfile=nome_arquivo,
                     filetypes=[("Arquivo PDF", "*.pdf")],
-                    title="Salvar relatório como",
+                    title="Salvar relatorio como",
                 )
-
                 if not caminho_pdf:
                     return
 
             gerar_relatorio(dados, imagens_salvas, caminho_pdf)
-            messagebox.showinfo("Sucesso", f"Relatório gerado:\n{caminho_pdf}")
+            messagebox.showinfo("Sucesso", f"Relatorio gerado:\n{caminho_pdf}")
         except Exception as erro:
             messagebox.showerror("Erro", str(erro))
 
@@ -227,24 +286,24 @@ class TelaRelatorioFotografico:
             data = self.filtro_data.get().strip() if hasattr(self, "filtro_data") else ""
             self.relatorios_encontrados = listar_relatorios(modelo=modelo, data=data)
         except ValueError as erro:
-            messagebox.showwarning("Filtro inválido", str(erro))
+            messagebox.showwarning("Filtro invalido", str(erro))
             return
         except Exception as erro:
             messagebox.showerror("Erro", str(erro))
             return
 
-        self.tree_relatorios.delete(*self.tree_relatorios.get_children())
+        if hasattr(self, "tree_relatorios"):
+            self.tree_relatorios.delete(*self.tree_relatorios.get_children())
+            for indice, relatorio in enumerate(self.relatorios_encontrados):
+                self.tree_relatorios.insert(
+                    "",
+                    "end",
+                    iid=str(indice),
+                    values=(relatorio["modelo"], relatorio["data"], relatorio["arquivo"]),
+                )
 
-        for indice, relatorio in enumerate(self.relatorios_encontrados):
-            self.tree_relatorios.insert(
-                "",
-                "end",
-                iid=str(indice),
-                values=(relatorio["modelo"], relatorio["data"], relatorio["arquivo"]),
-            )
-
-        total = len(self.relatorios_encontrados)
-        self.label_resultado.configure(text=f"{total} relatório(s) encontrado(s).")
+        if hasattr(self, "label_resultado"):
+            self.label_resultado.configure(text=f"{len(self.relatorios_encontrados)} relatorio(s) encontrado(s).")
 
     def limpar_filtros_relatorios(self):
         self.filtro_modelo.delete(0, "end")
@@ -254,7 +313,7 @@ class TelaRelatorioFotografico:
     def abrir_relatorio_selecionado(self, _event=None):
         selecionado = self.tree_relatorios.focus()
         if not selecionado:
-            messagebox.showwarning("Aviso", "Selecione um relatório.")
+            messagebox.showwarning("Aviso", "Selecione um relatorio.")
             return
 
         relatorio = self.relatorios_encontrados[int(selecionado)]

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from utils.planilha import carregar_todas_abas_seguras, criar_backup_planilha, padronizar_dataframe_aba
+
 
 VEICULOS_COLUNAS = [
     "PATRIMONIO",
@@ -53,6 +55,7 @@ class BancoDados:
     def __init__(self, arquivo: str):
         self.arquivo = str(Path(arquivo))
         self.inicializar_arquivo()
+        self.reparar_estrutura()
 
     def salvar(self, aba: str, dados: dict) -> None:
         df_existente = self.carregar_dataframe(aba)
@@ -63,7 +66,7 @@ class BancoDados:
         df = self.carregar_dataframe("VEICULOS")
         if "PATRIMONIO" not in df.columns:
             return []
-        return df["PATRIMONIO"].dropna().astype(str).tolist()
+        return sorted({valor for valor in df["PATRIMONIO"].dropna().astype(str) if valor.strip()})
 
     def ler_aba(self, aba: str) -> str:
         df = self.carregar_dataframe(aba)
@@ -72,29 +75,16 @@ class BancoDados:
         return df.to_string(index=False)
 
     def carregar_dataframe(self, aba: str) -> pd.DataFrame:
-        colunas = ESTRUTURA_ABAS.get(aba, [])
-        try:
-            df = pd.read_excel(self.arquivo, sheet_name=aba)
-        except Exception:
-            return pd.DataFrame(columns=colunas)
-
-        for coluna in colunas:
-            if coluna not in df.columns:
-                df[coluna] = ""
-
-        if colunas:
-            extras = [col for col in df.columns if col not in colunas]
-            df = df[colunas + extras]
-
-        return df
+        abas = carregar_todas_abas_seguras(self.arquivo, ESTRUTURA_ABAS)
+        return abas.get(aba, pd.DataFrame(columns=ESTRUTURA_ABAS.get(aba, [])))
 
     def escrever_aba(self, aba: str, dataframe: pd.DataFrame) -> None:
         abas = self._carregar_todas_as_abas()
-        abas[aba] = dataframe.copy()
+        colunas_esperadas = ESTRUTURA_ABAS.get(aba, [])
+        abas[aba] = padronizar_dataframe_aba(dataframe, aba, colunas_esperadas)
 
-        with pd.ExcelWriter(self.arquivo, engine="openpyxl") as writer:
-            for nome_aba, df in abas.items():
-                df.to_excel(writer, sheet_name=nome_aba, index=False)
+        criar_backup_planilha(self.arquivo)
+        self._escrever_abas(abas)
 
     def inicializar_arquivo(self) -> None:
         if not Path(self.arquivo).exists():
@@ -103,27 +93,33 @@ class BancoDados:
     def criar_estrutura(self) -> None:
         with pd.ExcelWriter(self.arquivo, engine="openpyxl") as writer:
             for aba, colunas in ESTRUTURA_ABAS.items():
-                pd.DataFrame(columns=colunas).to_excel(
-                    writer,
-                    sheet_name=aba,
-                    index=False,
-                )
+                pd.DataFrame(columns=colunas).to_excel(writer, sheet_name=aba, index=False)
+
+    def reparar_estrutura(self) -> None:
+        abas = self._carregar_todas_as_abas()
+        precisa_reescrever = False
+
+        for aba, colunas in ESTRUTURA_ABAS.items():
+            df_atual = abas.get(aba, pd.DataFrame())
+            df_padronizado = padronizar_dataframe_aba(df_atual, aba, colunas)
+            if list(df_atual.columns) != list(df_padronizado.columns):
+                precisa_reescrever = True
+            abas[aba] = df_padronizado
+
+        if precisa_reescrever:
+            criar_backup_planilha(self.arquivo)
+            self._escrever_abas(abas)
 
     def _carregar_todas_as_abas(self) -> dict[str, pd.DataFrame]:
-        abas = {
-            nome_aba: pd.DataFrame(columns=colunas)
-            for nome_aba, colunas in ESTRUTURA_ABAS.items()
-        }
+        return carregar_todas_abas_seguras(self.arquivo, ESTRUTURA_ABAS)
 
-        if not Path(self.arquivo).exists():
-            return abas
-
+    def _escrever_abas(self, abas: dict[str, pd.DataFrame]) -> None:
         try:
-            arquivo_excel = pd.ExcelFile(self.arquivo)
-        except Exception:
-            return abas
-
-        for nome_aba in arquivo_excel.sheet_names:
-            abas[nome_aba] = pd.read_excel(self.arquivo, sheet_name=nome_aba)
-
-        return abas
+            with pd.ExcelWriter(self.arquivo, engine="openpyxl") as writer:
+                for nome_aba, colunas in ESTRUTURA_ABAS.items():
+                    df = abas.get(nome_aba, pd.DataFrame(columns=colunas))
+                    df.to_excel(writer, sheet_name=nome_aba, index=False)
+        except PermissionError as exc:
+            raise PermissionError(
+                "Não foi possível salvar a planilha. Feche o Excel e tente novamente."
+            ) from exc
