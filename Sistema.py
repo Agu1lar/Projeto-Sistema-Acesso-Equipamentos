@@ -4,6 +4,7 @@ from tkinter import filedialog, messagebox
 
 from Telas import Telas
 from banco.BancoDados import BancoDados
+from services.service_certificados import listar_certificados_pendentes
 from services.service_relatorios_fotograficos import listar_relatorios
 from telas.TelaRelatorioFotografico import TelaRelatorioFotografico
 from utils.caminhos import caminho_banco, caminho_recurso
@@ -34,6 +35,7 @@ class SistemaApp:
         self.banco = None
         self.telas = None
         self.tela_foto = None
+        self._notificacao_certificados_exibida = False
 
         configurar_aparencia()
         configurar_tabela_estilo()
@@ -77,7 +79,7 @@ class SistemaApp:
         ctk.CTkLabel(topo, text="Sistema de Manutencao", font=FONT_HEADING, text_color=TEXT).pack(anchor="w", pady=(10, 2))
         ctk.CTkLabel(
             topo,
-            text="Operacao centralizada para veiculos, manutencoes e relatorios.",
+            text="Operacao centralizada para manutencoes, certificados e relatorios.",
             font=FONT_SMALL,
             text_color=TEXT_MUTED,
             wraplength=200,
@@ -90,8 +92,11 @@ class SistemaApp:
         if self.banco:
             botoes = [
                 ("Visao Geral", self.menu),
-                ("Veiculos", self.telas.tela_veiculos),
+                ("Fila Unica", self.telas.tela_fila_unica),
                 ("Manutencao", self.telas.tela_manutencao),
+                ("Coleta Mobile", self.telas.tela_coleta_mobile),
+                ("Certificados", self.telas.tela_certificados_funcionarios),
+                ("Carteirinhas", self.telas.tela_carteirinhas_treinamento),
                 ("Relatorios", self.telas.tela_relatorios_manutencao),
                 ("Relatorio Fotografico", self.tela_foto.abrir),
             ]
@@ -133,6 +138,30 @@ class SistemaApp:
         self.tela_foto = TelaRelatorioFotografico(self.app, self.frame, self.banco, self.menu)
         self._criar_menu()
         self.menu()
+
+    def _notificar_certificados_pendentes(self):
+        if not self.banco or self._notificacao_certificados_exibida:
+            return
+
+        pendentes = listar_certificados_pendentes(self.banco)
+        if pendentes.empty:
+            return
+
+        self._notificacao_certificados_exibida = True
+        destaques = []
+        for _, linha in pendentes.head(5).iterrows():
+            nome = str(linha.get("NOME", "Sem nome")).strip() or "Sem nome"
+            tipo = str(linha.get("TIPO_CERTIFICADO", "Sem tipo")).strip() or "Sem tipo"
+            vencimento = str(linha.get("DATA_VENCIMENTO", "")).strip() or "sem data"
+            destaques.append(f"{nome} | {tipo} | vence em {vencimento}")
+
+        complemento = "\n..." if len(pendentes) > 5 else ""
+        messagebox.showwarning(
+            "Certificados pendentes",
+            f"Existem {len(pendentes)} certificado(s) vencido(s) ou a vencer em ate 30 dias.\n\n"
+            f"{chr(10).join(destaques)}{complemento}",
+            parent=self.app,
+        )
 
     def abrir_base_existente(self):
         arquivo = filedialog.askopenfilename(
@@ -215,16 +244,18 @@ class SistemaApp:
 
         linha_metricas = ctk.CTkFrame(pagina, fg_color="transparent")
         linha_metricas.pack(fill="x", pady=(0, 18))
-        linha_metricas.grid_columnconfigure((0, 1, 2), weight=1)
+        linha_metricas.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
-        veiculos = len(self.banco.carregar_veiculos())
         manutencoes = len(self.banco.carregar_dataframe("MANUTENCOES"))
+        carteirinhas = len(self.banco.carregar_dataframe("TREINAMENTOS"))
+        certificados_pendentes = len(listar_certificados_pendentes(self.banco))
         relatorios_foto = len(listar_relatorios())
 
         metricas = [
-            ("Veiculos cadastrados", str(veiculos), SUCCESS),
             ("Manutencoes registradas", str(manutencoes), ACCENT),
-            ("Relatorios fotograficos", str(relatorios_foto), TEXT),
+            ("Carteirinhas emitidas", str(carteirinhas), TEXT),
+            ("Certificados pendentes", str(certificados_pendentes), "#ef4444" if certificados_pendentes else TEXT),
+            ("Relatorios fotograficos", str(relatorios_foto), SUCCESS),
         ]
 
         for indice, (titulo, valor, cor) in enumerate(metricas):
@@ -239,7 +270,7 @@ class SistemaApp:
         ctk.CTkLabel(esquerda, text="Fluxo recomendado", font=FONT_HEADING, text_color=TEXT).pack(anchor="w")
         ctk.CTkLabel(
             esquerda,
-            text="Cadastre o veiculo, lance a manutencao e gere os relatorios sem voltar para a planilha.",
+            text="Lance a manutencao, acompanhe certificados e gere os relatorios sem voltar para a planilha.",
             font=FONT_BODY,
             text_color=TEXT_MUTED,
             wraplength=560,
@@ -250,8 +281,11 @@ class SistemaApp:
         acoes.pack(anchor="w")
         for indice, (texto, comando, primario) in enumerate(
             [
-                ("Novo veiculo", self.telas.tela_veiculos, True),
+                ("Fila unica", self.telas.tela_fila_unica, True),
                 ("Nova manutencao", self.telas.tela_manutencao, False),
+                ("Coleta mobile", self.telas.tela_coleta_mobile, False),
+                ("Novo certificado", self.telas.tela_certificados_funcionarios, False),
+                ("Nova carteirinha", self.telas.tela_carteirinhas_treinamento, False),
                 ("Relatorio fotografico", self.tela_foto.abrir, False),
             ]
         ):
@@ -291,6 +325,16 @@ class SistemaApp:
             botao = ctk.CTkButton(card, text="Abrir", command=comando, width=140)
             estilizar_botao(botao)
             botao.pack(anchor="w", padx=18, pady=18)
+
+        rodape_metricas = ctk.CTkFrame(pagina, fg_color="transparent")
+        rodape_metricas.pack(fill="x", pady=(18, 0))
+        criar_cartao_info(
+            rodape_metricas,
+            "Relatorios fotograficos",
+            str(relatorios_foto),
+            TEXT,
+        ).pack(fill="x")
+        self.app.after(150, self._notificar_certificados_pendentes)
 
     def rodar(self):
         self.app.mainloop()

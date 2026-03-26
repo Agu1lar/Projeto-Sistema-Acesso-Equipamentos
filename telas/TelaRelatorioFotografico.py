@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
@@ -10,6 +11,7 @@ from services.service_pdf import gerar_relatorio
 from services.service_relatorios_fotograficos import (
     abrir_relatorio,
     caminho_pdf_modelo,
+    exportar_relatorios_para_pasta,
     listar_relatorios,
     obter_pasta_base,
     salvar_pasta_base,
@@ -205,9 +207,15 @@ class TelaRelatorioFotografico:
 
         rodape = ctk.CTkFrame(pagina, fg_color="transparent")
         rodape.pack(fill="x", pady=(10, 0))
-        botao = ctk.CTkButton(rodape, text="Abrir selecionado", command=self.abrir_relatorio_selecionado, width=180)
-        estilizar_botao(botao, primario=True)
-        botao.pack(anchor="w")
+        for indice, (texto, comando, primario) in enumerate(
+            [
+                ("Abrir selecionado", self.abrir_relatorio_selecionado, True),
+                ("Exportar lote", self.exportar_lote_relatorios, False),
+            ]
+        ):
+            botao = ctk.CTkButton(rodape, text=texto, command=comando, width=180)
+            estilizar_botao(botao, primario=primario)
+            botao.pack(side="left", padx=(0, 10))
 
         self.buscar_relatorios()
 
@@ -224,7 +232,11 @@ class TelaRelatorioFotografico:
             return
 
         self.imagens_selecionadas = list(caminhos)
-        self.label_imagens.configure(text=f"{len(caminhos)} imagem(ns) selecionada(s)")
+        datas = sorted(datetime.fromtimestamp(Path(caminho).stat().st_mtime) for caminho in caminhos if Path(caminho).exists())
+        complemento = ""
+        if datas:
+            complemento = f" | periodo: {datas[0]:%d/%m/%Y %H:%M} ate {datas[-1]:%d/%m/%Y %H:%M}"
+        self.label_imagens.configure(text=f"{len(caminhos)} imagem(ns) selecionada(s){complemento}")
 
     def definir_pasta_base(self):
         pasta = filedialog.askdirectory(title="Escolha a pasta base dos relatorios por modelo")
@@ -319,5 +331,20 @@ class TelaRelatorioFotografico:
         relatorio = self.relatorios_encontrados[int(selecionado)]
         try:
             abrir_relatorio(relatorio["caminho"])
+        except Exception as erro:
+            messagebox.showerror("Erro", str(erro))
+
+    def exportar_lote_relatorios(self):
+        if not self.relatorios_encontrados:
+            messagebox.showwarning("Aviso", "Nenhum relatorio encontrado para exportar.")
+            return
+
+        pasta = filedialog.askdirectory(title="Escolha a pasta para exportar os relatorios filtrados")
+        if not pasta:
+            return
+
+        try:
+            copiados = exportar_relatorios_para_pasta(self.relatorios_encontrados, pasta)
+            messagebox.showinfo("Sucesso", f"{copiados} relatorio(s) exportado(s) para:\n{pasta}")
         except Exception as erro:
             messagebox.showerror("Erro", str(erro))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -52,10 +53,12 @@ def construir_nome_pdf(contrato: str, modelo: str, data_referencia: datetime | N
 
 
 def caminho_pdf_modelo(modelo: str, contrato: str, data_referencia: datetime | None = None) -> str:
+    data_base = data_referencia or datetime.now()
     modelo_limpo = _slug(modelo, "sem_modelo")
-    pasta_modelo = Path(obter_pasta_base()) / modelo_limpo
+    contrato_limpo = _slug(contrato, "sem_contrato")
+    pasta_modelo = Path(obter_pasta_base()) / modelo_limpo / contrato_limpo / f"{data_base:%Y-%m-%d}"
     pasta_modelo.mkdir(parents=True, exist_ok=True)
-    return str(pasta_modelo / construir_nome_pdf(contrato, modelo, data_referencia))
+    return str(pasta_modelo / construir_nome_pdf(contrato, modelo, data_base))
 
 
 def listar_relatorios(modelo: str = "", data: str = "") -> list[dict]:
@@ -83,7 +86,7 @@ def listar_relatorios(modelo: str = "", data: str = "") -> list[dict]:
 
         resultados.append(
             {
-                "modelo": arquivo.parent.name,
+                "modelo": arquivo.parts[len(pasta_base.parts)] if len(arquivo.parts) > len(pasta_base.parts) else arquivo.parent.name,
                 "arquivo": arquivo.name,
                 "data": data_arquivo.strftime("%d/%m/%Y %H:%M"),
                 "timestamp": data_arquivo.timestamp(),
@@ -100,3 +103,26 @@ def abrir_relatorio(caminho: str) -> None:
     if not arquivo.exists():
         raise FileNotFoundError("O relatório selecionado não existe mais.")
     os.startfile(str(arquivo))
+
+
+def exportar_relatorios_para_pasta(relatorios: list[dict], pasta_destino: str) -> int:
+    destino_base = Path(pasta_destino)
+    destino_base.mkdir(parents=True, exist_ok=True)
+    copiados = 0
+
+    for relatorio in relatorios:
+        origem = Path(relatorio["caminho"])
+        if not origem.exists():
+            continue
+
+        subpasta = destino_base / _slug(relatorio.get("modelo", ""), "modelo")
+        subpasta.mkdir(parents=True, exist_ok=True)
+        destino = subpasta / origem.name
+        contador = 1
+        while destino.exists():
+            destino = subpasta / f"{origem.stem}_{contador}{origem.suffix}"
+            contador += 1
+        shutil.copy2(origem, destino)
+        copiados += 1
+
+    return copiados

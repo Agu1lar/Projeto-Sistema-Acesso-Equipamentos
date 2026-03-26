@@ -35,6 +35,24 @@ def caminho_config_relatorios() -> str:
     return str(caminho_dados() / "config_relatorios_fotograficos.json")
 
 
+def caminho_mobile_sync() -> str:
+    pasta = caminho_dados() / "mobile_sync"
+    pasta.mkdir(parents=True, exist_ok=True)
+    return str(pasta)
+
+
+def caminho_mobile_pendencias() -> str:
+    pasta = Path(caminho_mobile_sync()) / "pendentes"
+    pasta.mkdir(parents=True, exist_ok=True)
+    return str(pasta)
+
+
+def caminho_mobile_importados() -> str:
+    pasta = Path(caminho_mobile_sync()) / "importados"
+    pasta.mkdir(parents=True, exist_ok=True)
+    return str(pasta)
+
+
 def caminho_recurso(relativo: str) -> str:
     try:
         base = Path(sys._MEIPASS)
