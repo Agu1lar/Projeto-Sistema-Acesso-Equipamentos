@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import shutil
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -13,10 +13,14 @@ def _slug(texto: str) -> str:
     return valor.strip("._") or "arquivo"
 
 
+def _titulo_imagem(caminho_origem: Path) -> str:
+    return caminho_origem.stem.replace("_", " ").replace("-", " ").strip() or "Imagem"
+
+
 def salvar_imagens(lista_caminhos, contrato):
     data_base = datetime.now().strftime("%Y-%m-%d")
     pasta_destino = Path(caminho_imagens(Path(_slug(contrato)) / data_base))
-    caminhos_salvos = []
+    imagens_salvas = []
 
     for caminho_origem in lista_caminhos:
         origem = Path(caminho_origem)
@@ -24,14 +28,20 @@ def salvar_imagens(lista_caminhos, contrato):
             continue
 
         timestamp = datetime.fromtimestamp(origem.stat().st_mtime).strftime("%Y%m%d_%H%M%S")
-        destino = pasta_destino / f"{_slug(contrato)}_{timestamp}{origem.suffix.lower()}"
+        nome_base = f"{_slug(contrato)}_{_slug(origem.stem)}_{timestamp}"
+        destino = pasta_destino / f"{nome_base}{origem.suffix.lower()}"
         contador = 1
 
         while destino.exists():
-            destino = pasta_destino / f"{_slug(contrato)}_{timestamp}_{contador}{origem.suffix.lower()}"
+            destino = pasta_destino / f"{nome_base}_{contador}{origem.suffix.lower()}"
             contador += 1
 
         shutil.copy2(origem, destino)
-        caminhos_salvos.append(str(destino))
+        imagens_salvas.append(
+            {
+                "caminho": str(destino),
+                "titulo": _titulo_imagem(origem),
+            }
+        )
 
-    return caminhos_salvos
+    return imagens_salvas

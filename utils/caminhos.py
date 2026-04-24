@@ -35,6 +35,10 @@ def caminho_config_relatorios() -> str:
     return str(caminho_dados() / "config_relatorios_fotograficos.json")
 
 
+def caminho_config_notificacoes() -> str:
+    return str(caminho_dados() / "config_notificacoes.json")
+
+
 def caminho_mobile_sync() -> str:
     pasta = caminho_dados() / "mobile_sync"
     pasta.mkdir(parents=True, exist_ok=True)

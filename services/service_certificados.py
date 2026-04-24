@@ -154,6 +154,10 @@ def _obter_modelo_certificado(chave_modelo: str | None) -> tuple[str, dict]:
 
 
 def _formatar_data_extenso(valor: str) -> str:
+    return _formatar_data_extenso_local(valor, "Belo Horizonte")
+
+
+def _formatar_data_extenso_local(valor: str, cidade: str) -> str:
     meses = {
         1: "Janeiro",
         2: "Fevereiro",
@@ -169,9 +173,29 @@ def _formatar_data_extenso(valor: str) -> str:
         12: "Dezembro",
     }
     data = _parse_data_br(valor)
+    cidade_texto = _texto(cidade, "Belo Horizonte")
     if not data:
-        return f"Belo Horizonte, {_texto(valor)}"
-    return f"Belo Horizonte, {data.day:02d} de {meses[data.month]} {data.year}"
+        return f"{cidade_texto}, {_texto(valor)}"
+    return f"{cidade_texto}, {data.day:02d} de {meses[data.month]} {data.year}"
+
+
+def _cidade_certificado(dados: dict) -> str:
+    return _texto(dados.get("CERTIFICADO_CIDADE"), "Belo Horizonte")
+
+
+def _uf_certificado(dados: dict) -> str:
+    return _texto(dados.get("CERTIFICADO_UF"), "MG")
+
+
+def _endereco_certificado(dados: dict, caixa_alta: bool = False, separador_bairro: str = " - ") -> str:
+    rua = _texto(dados.get("CERTIFICADO_RUA"))
+    numero = _texto(dados.get("CERTIFICADO_NUMERO"))
+    bairro = _texto(dados.get("CERTIFICADO_BAIRRO"))
+    cidade = _cidade_certificado(dados)
+    uf = _uf_certificado(dados)
+    cep = _texto(dados.get("CERTIFICADO_CEP"))
+    endereco = f"{rua}, {numero}{separador_bairro}{bairro}, {cidade}/{uf} - {cep}"
+    return endereco.upper() if caixa_alta else endereco
 
 
 def _distribuir_texto(texto: str, comprimentos: list[int]) -> list[str]:
@@ -261,10 +285,6 @@ def gerar_certificado_treinamento(dados: dict, caminho_pdf: str) -> str:
     carga_horaria = _texto(dados.get("CARGA_HORARIA"))
     data_realizacao = _texto(dados.get("DATA_EMISSAO"))
     validade = str(dados.get("VALIDADE", "") or "").strip()
-    rua = _texto(dados.get("CERTIFICADO_RUA"))
-    numero = _texto(dados.get("CERTIFICADO_NUMERO"))
-    bairro = _texto(dados.get("CERTIFICADO_BAIRRO"))
-    cep = _texto(dados.get("CERTIFICADO_CEP"))
     instrutor = _texto(dados.get("INSTRUTOR"))
     responsavel = _texto(dados.get("RESPONSAVEL"))
     imprimir_cpf = _bool_sim(dados.get("CERTIFICADO_IMPRIMIR_CPF", "SIM"))
@@ -302,7 +322,7 @@ def gerar_certificado_treinamento(dados: dict, caminho_pdf: str) -> str:
     linha_y = pagina_h - 34 * mm
 
     parte_cpf = f", portador do CPF {cpf}," if imprimir_cpf and cpf != "-" else ","
-    endereco = f"{rua}, {numero} - {bairro}, Belo Horizonte/MG - {cep}"
+    endereco = _endereco_certificado(dados)
     texto_abertura = (
         f"{nome}{parte_cpf} concluiu com exito o treinamento em {treinamento}, "
         f"com carga horaria de {carga_horaria}, realizado no dia {data_realizacao}, {endereco}."
@@ -355,7 +375,7 @@ def gerar_certificado_treinamento(dados: dict, caminho_pdf: str) -> str:
             y_topico -= 6.8 * mm
         y_topico -= 1.5 * mm
 
-    cidade_data = f"Belo Horizonte, {data_realizacao}"
+    cidade_data = f"{_cidade_certificado(dados)}, {data_realizacao}"
     pdf.setFont("Helvetica-Bold", 12.5)
     pdf.drawCentredString(pagina_w / 2, 50 * mm, cidade_data)
 
@@ -396,10 +416,6 @@ def gerar_certificado_word(dados: dict, caminho_arquivo: str) -> str:
     treinamento = _texto(dados.get("TREINAMENTO"))
     carga_horaria = _texto(dados.get("CARGA_HORARIA"))
     data_realizacao = _texto(dados.get("DATA_EMISSAO"))
-    rua = _texto(dados.get("CERTIFICADO_RUA"))
-    numero = _texto(dados.get("CERTIFICADO_NUMERO"))
-    bairro = _texto(dados.get("CERTIFICADO_BAIRRO"))
-    cep = _texto(dados.get("CERTIFICADO_CEP"))
     instrutor = _texto(dados.get("INSTRUTOR")).upper()
     responsavel = _texto(dados.get("RESPONSAVEL"))
     imprimir_cpf = _bool_sim(dados.get("CERTIFICADO_IMPRIMIR_CPF", "SIM"))
@@ -427,6 +443,64 @@ def gerar_certificado_word(dados: dict, caminho_arquivo: str) -> str:
         _substituir_textos_iguais(textos, configuracao_modelo["instrutor_base"], instrutor)
         _substituir_textos_iguais(textos, configuracao_modelo["responsavel_base"], responsavel)
         _substituir_textos_iguais(textos, configuracao_modelo["data_extenso_base"], _formatar_data_extenso(data_realizacao))
+
+        _substituir_intervalos_por_texto(
+            textos,
+            configuracao_modelo["inicio_intro"],
+            configuracao_modelo["fim_intro"],
+            intro,
+        )
+
+        if not imprimir_cpf:
+            for alvo in ("portador do CP", "F", "portador do ", "CPF "):
+                _substituir_textos_iguais(textos, alvo, "")
+
+        conteudos["word/document.xml"] = ET.tostring(raiz, encoding="utf-8", xml_declaration=True)
+
+    with zipfile.ZipFile(arquivo, "w", compression=zipfile.ZIP_DEFLATED) as docx:
+        for nome_arquivo, dados_arquivo in conteudos.items():
+            docx.writestr(nome_arquivo, dados_arquivo)
+
+    return str(arquivo)
+
+
+def gerar_certificado_word(dados: dict, caminho_arquivo: str) -> str:
+    arquivo = Path(caminho_arquivo)
+    arquivo.parent.mkdir(parents=True, exist_ok=True)
+    modelo, configuracao_modelo = _obter_modelo_certificado(dados.get("CERTIFICADO_MODELO"))
+
+    nome = _texto(dados.get("NOME")).upper()
+    cpf = _texto(dados.get("CPF"))
+    treinamento = _texto(dados.get("TREINAMENTO"))
+    carga_horaria = _texto(dados.get("CARGA_HORARIA"))
+    data_realizacao = _texto(dados.get("DATA_EMISSAO"))
+    instrutor = _texto(dados.get("INSTRUTOR")).upper()
+    responsavel = _texto(dados.get("RESPONSAVEL"))
+    imprimir_cpf = _bool_sim(dados.get("CERTIFICADO_IMPRIMIR_CPF", "SIM"))
+
+    endereco = _endereco_certificado(dados, caixa_alta=True, separador_bairro=", ")
+    intro = (
+        f"{configuracao_modelo['prefixo_intro']}{treinamento}, "
+        f"com carga horÃ¡ria de {carga_horaria}, realizado no dia {data_realizacao}, {endereco}"
+    )
+
+    shutil.copyfile(modelo, arquivo)
+
+    with zipfile.ZipFile(arquivo, "r") as docx:
+        conteudos = {info.filename: docx.read(info.filename) for info in docx.infolist()}
+        raiz = ET.fromstring(conteudos["word/document.xml"])
+        textos = raiz.findall(".//w:t", NS_W)
+
+        _substituir_textos_iguais(textos, configuracao_modelo["nome_base"], nome)
+        _substituir_textos_iguais(textos, configuracao_modelo["cpf_base"], cpf if imprimir_cpf else "")
+        _substituir_textos_iguais(textos, configuracao_modelo["endereco_base"], endereco)
+        _substituir_textos_iguais(textos, configuracao_modelo["instrutor_base"], instrutor)
+        _substituir_textos_iguais(textos, configuracao_modelo["responsavel_base"], responsavel)
+        _substituir_textos_iguais(
+            textos,
+            configuracao_modelo["data_extenso_base"],
+            _formatar_data_extenso_local(data_realizacao, _cidade_certificado(dados)),
+        )
 
         _substituir_intervalos_por_texto(
             textos,

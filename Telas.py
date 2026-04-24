@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+from hashlib import sha1
 from pathlib import Path
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
@@ -25,6 +27,7 @@ from services.service_certificados import (
     listar_certificados_pendentes,
     preparar_certificado,
 )
+from services.service_importacao_carteirinhas import extrair_dados_carteirinha_pdf, listar_pdfs_carteirinhas
 from services.service_mobile_sync import (
     HOST_PADRAO,
     PORTA_PADRAO,
@@ -37,7 +40,12 @@ from services.service_mobile_sync import (
     parar_servidor_mobile,
     servidor_mobile_ativo,
 )
-from utils.caminhos import caminho_mobile_importados, caminho_mobile_pendencias
+from services.service_relatorio_tecnico import (
+    criar_dados_padrao_relatorio_tecnico,
+    gerar_relatorio_tecnico_word,
+)
+from services.service_relatorio_gs32md import gerar_relatorio_gs32md_pdf, sugerir_nome_relatorio_gs32md
+from utils.caminhos import caminho_config_notificacoes, caminho_mobile_importados, caminho_mobile_pendencias
 from utils.ui import (
     ACCENT,
     BG_APP,
@@ -98,6 +106,25 @@ COLUNAS_EXIBICAO = {
         "HORIMETRO_ATUAL",
         "HORIMETRO_TROCA",
     ],
+    "TREINAMENTOS": COLUNAS_CARTEIRINHA,
+}
+
+COLUNAS_OCULTAS_DETALHES = {
+    "TREINAMENTOS": {
+        "CERTIFICADO_RUA",
+        "CERTIFICADO_NUMERO",
+        "CERTIFICADO_BAIRRO",
+        "CERTIFICADO_CIDADE",
+        "CERTIFICADO_UF",
+        "CERTIFICADO_CEP",
+        "CERTIFICADO_IMPRIMIR_CPF",
+        "CERTIFICADO_MODELO",
+        "DOCUMENTOS_PASTA",
+        "CERTIFICADO_PDF_CAMINHO",
+        "CERTIFICADO_WORD_CAMINHO",
+        "PDF_CAMINHO",
+        "MODELO_VERSAO",
+    }
 }
 
 NOMES_COLUNAS = {
@@ -166,6 +193,51 @@ class Telas:
         desejadas = COLUNAS_EXIBICAO.get(aba, list(df.columns))
         existentes = [coluna for coluna in desejadas if coluna in df.columns]
         return existentes or list(df.columns)
+
+    def _colunas_detalhes(self, aba, linha):
+        ocultas = COLUNAS_OCULTAS_DETALHES.get(aba, set())
+        return [coluna for coluna in linha.index if coluna not in ocultas]
+
+    def _abrir_popup_relatorio_tecnico(self, titulo, geometria="980x720"):
+        janela = ctk.CTkToplevel(self.app, fg_color=BG_APP)
+        janela.title(titulo)
+        janela.geometry(geometria)
+        janela.transient(self.app)
+        janela.grab_set()
+        return janela
+
+    def _chave_base_notificacao(self) -> str:
+        return sha1(str(getattr(self.banco, "arquivo", "") or "").encode("utf-8")).hexdigest()
+
+    def _carregar_estado_notificacoes(self) -> dict:
+        caminho = caminho_config_notificacoes()
+        try:
+            with open(caminho, "r", encoding="utf-8") as arquivo:
+                dados = json.load(arquivo)
+                return dados if isinstance(dados, dict) else {}
+        except Exception:
+            return {}
+
+    def _salvar_estado_notificacoes(self, estado: dict) -> None:
+        with open(caminho_config_notificacoes(), "w", encoding="utf-8") as arquivo:
+            json.dump(estado, arquivo, ensure_ascii=False, indent=2)
+
+    def _assinatura_pendencias_certificados(self, pendentes) -> str:
+        registros = []
+        for _, linha in pendentes.iterrows():
+            registros.append(
+                "|".join(
+                    [
+                        str(linha.get("NOME", "")).strip(),
+                        str(linha.get("TIPO_CERTIFICADO", "")).strip(),
+                        str(linha.get("CPF", "")).strip(),
+                        str(linha.get("DATA_VENCIMENTO", "")).strip(),
+                        str(linha.get("STATUS", "")).strip(),
+                    ]
+                )
+            )
+        payload = "\n".join(sorted(registros))
+        return sha1(payload.encode("utf-8")).hexdigest()
 
     def visualizar(self, aba):
         item_selecionado = None
@@ -343,7 +415,8 @@ class Telas:
 
                 texto = ctk.CTkTextbox(card, fg_color=BG_CARD, corner_radius=12, border_width=1, border_color=BORDER, text_color=TEXT)
                 texto.pack(fill="both", expand=True, padx=18, pady=(0, 14))
-                for coluna, valor in linha.items():
+                for coluna in self._colunas_detalhes(aba, linha):
+                    valor = linha.get(coluna, "")
                     texto.insert("end", f"{NOMES_COLUNAS.get(coluna, coluna)}: {valor}\n")
                 texto.configure(state="disabled")
 
@@ -890,7 +963,7 @@ class Telas:
                         item.get("recebido_em", ""),
                         patrimonios or primeiro.get("patrimonio", ""),
                         str(len(itens)),
-                        str(sum(len(it.get("fotos", [])) for it in itens)),
+                        str(sum(len(_listar_fotos_mobile(it)) for it in itens)),
                         item.get("origem", ""),
                     ),
                 )
@@ -921,11 +994,39 @@ class Telas:
             self.app.clipboard_append(url)
             messagebox.showinfo("Copiado", f"Link copiado para a area de transferencia:\n{url}")
 
-        def _dados_manutencao_mobile(dados, submission_id, destino_item):
+        def _listar_fotos_mobile(item_mobile):
+            fotos = []
+            for foto in item_mobile.get("fotos", []):
+                if isinstance(foto, dict):
+                    fotos.append(foto)
+                elif isinstance(foto, str):
+                    fotos.append({"caminho": foto, "titulo": Path(foto).stem})
+            if fotos:
+                return fotos
+
+            for grupo in item_mobile.get("fotos_nomeadas", []):
+                for foto in grupo.get("arquivos", []):
+                    if isinstance(foto, dict):
+                        fotos.append(foto)
+            return fotos
+
+        def _resumo_fotos_mobile(item_mobile):
+            grupos = item_mobile.get("fotos_nomeadas", [])
+            if grupos:
+                partes = [f"{grupo.get('titulo', grupo.get('campo', 'Foto'))}: {len(grupo.get('arquivos', []))}" for grupo in grupos]
+                return ", ".join(partes)
+
+            total = len(_listar_fotos_mobile(item_mobile))
+            return f"{total} foto(s)" if total else ""
+
+        def _dados_manutencao_mobile(dados, submission_id, destino_item, item_mobile):
             detalhe_base = dados.get("detalhe", "").strip()
             detalhe_mobile = f"Coleta mobile: {submission_id}"
             if destino_item.exists():
                 detalhe_mobile += f" | Fotos: {destino_item}"
+            resumo_fotos = _resumo_fotos_mobile(item_mobile)
+            if resumo_fotos:
+                detalhe_mobile += f" | Categorias: {resumo_fotos}"
 
             detalhes = " | ".join(parte for parte in [detalhe_base, detalhe_mobile] if parte)
 
@@ -958,7 +1059,7 @@ class Telas:
                 "MES": data_atual.strftime("%m"),
             }
 
-        def _dados_veiculo_mobile(dados, submission_id, destino_item):
+        def _dados_veiculo_mobile(dados, submission_id, destino_item, item_mobile):
             detalhes = []
             if dados.get("descricao", "").strip():
                 detalhes.append(dados.get("descricao", "").strip())
@@ -966,6 +1067,9 @@ class Telas:
                 detalhes.append(dados.get("detalhe", "").strip())
             if destino_item.exists():
                 detalhes.append(f"Coleta mobile: {submission_id} | Fotos: {destino_item}")
+            resumo_fotos = _resumo_fotos_mobile(item_mobile)
+            if resumo_fotos:
+                detalhes.append(f"Categorias de fotos: {resumo_fotos}")
 
             return {
                 "PATRIMONIO": dados.get("patrimonio", "").strip().upper(),
@@ -1012,7 +1116,10 @@ class Telas:
                 texto.insert("end", f"[Item {indice_item}]\n")
                 for chave, valor in dados.items():
                     texto.insert("end", f"{chave}: {valor}\n")
-                texto.insert("end", f"Fotos: {len(item.get('fotos', []))}\n\n")
+                texto.insert("end", f"Fotos: {len(_listar_fotos_mobile(item))}\n")
+                for grupo in item.get("fotos_nomeadas", []):
+                    texto.insert("end", f"  - {grupo.get('titulo', grupo.get('campo', 'Foto'))}: {len(grupo.get('arquivos', []))}\n")
+                texto.insert("end", "\n")
             texto.configure(state="disabled")
 
         def importar_ids(ids: list[str]):
@@ -1036,12 +1143,12 @@ class Telas:
                         destino = str(dados_item.get("destino", "MANUTENCAO")).strip().upper() or "MANUTENCAO"
                         pasta_fotos = destino_base / f"item_{indice_item:02d}" / "fotos"
                         if destino == "VEICULO":
-                            registro = _dados_veiculo_mobile(dados_item, submission_id, pasta_fotos)
+                            registro = _dados_veiculo_mobile(dados_item, submission_id, pasta_fotos, item)
                             if not registro["PATRIMONIO"]:
                                 raise ValueError(f"Item {indice_item} sem patrimonio.")
                             self.banco.salvar("VEICULOS", registro)
                         else:
-                            registro = _dados_manutencao_mobile(dados_item, submission_id, pasta_fotos)
+                            registro = _dados_manutencao_mobile(dados_item, submission_id, pasta_fotos, item)
                             if not registro["PATRIMONIO"] or not registro["DESCRICAO"]:
                                 raise ValueError(f"Item {indice_item} sem patrimonio ou descricao.")
                             resumo = resumo_veiculo(self.banco, registro["PATRIMONIO"])
@@ -1077,6 +1184,38 @@ class Telas:
 
         def importar_todas():
             importar_ids([item["id"] for item in pendencias["dados"]])
+
+        def gerar_relatorio_gs32md():
+            selecionado = tree.focus()
+            if not selecionado:
+                messagebox.showwarning("Aviso", "Selecione uma coleta para gerar o relatorio.")
+                return
+
+            payload = obter_pendencia_mobile(selecionado)
+            if not payload:
+                messagebox.showwarning("Aviso", "A coleta selecionada nao foi encontrada.")
+                return
+
+            if not payload.get("itens"):
+                messagebox.showwarning("Aviso", "A coleta selecionada nao possui itens.")
+                return
+
+            caminho_pdf = filedialog.asksaveasfilename(
+                parent=self.app,
+                title="Salvar relatorio GS32MD como",
+                defaultextension=".pdf",
+                initialfile=sugerir_nome_relatorio_gs32md(payload),
+                filetypes=[("Arquivo PDF", "*.pdf")],
+            )
+            if not caminho_pdf:
+                return
+
+            try:
+                gerar_relatorio_gs32md_pdf(payload, caminho_pdf)
+                os.startfile(caminho_pdf)
+                messagebox.showinfo("Sucesso", f"Relatorio gerado com sucesso.\n\nArquivo: {caminho_pdf}")
+            except Exception as erro:
+                messagebox.showerror("Erro", f"Nao foi possivel gerar o relatorio GS32MD:\n{erro}")
 
         def excluir_selecionada():
             selecionado = tree.focus()
@@ -1122,6 +1261,7 @@ class Telas:
             tabela_corpo,
             [
                 ("Atualizar fila", atualizar_lista, False),
+                ("Gerar PDF GS32MD", gerar_relatorio_gs32md, False),
                 ("Importar selecionada", importar_selecionada, True),
                 ("Importar todas", importar_todas, False),
                 ("Excluir selecionada", excluir_selecionada, False),
@@ -1479,6 +1619,13 @@ class Telas:
             pendentes = listar_certificados_pendentes(self.banco)
             if pendentes.empty:
                 return
+
+            chave_base = self._chave_base_notificacao()
+            estado_notificacoes = self._carregar_estado_notificacoes()
+            assinatura_atual = self._assinatura_pendencias_certificados(pendentes)
+            if estado_notificacoes.get(chave_base) == assinatura_atual:
+                return
+
             destaques = []
             for _, linha in pendentes.head(5).iterrows():
                 destaques.append(
@@ -1490,6 +1637,8 @@ class Telas:
                 f"Existem {len(pendentes)} certificado(s) com vencimento proximo ou vencido.\n\n"
                 f"{chr(10).join(destaques)}{complemento}",
             )
+            estado_notificacoes[chave_base] = assinatura_atual
+            self._salvar_estado_notificacoes(estado_notificacoes)
 
         def exportar_pdf():
             df_exportacao = estado["df_filtrado"].copy()
@@ -1670,6 +1819,8 @@ class Telas:
             ("Rua", "CERTIFICADO_RUA", "Ex.: Av. Assis Chateaubriand"),
             ("Numero", "CERTIFICADO_NUMERO", "Ex.: 889"),
             ("Bairro", "CERTIFICADO_BAIRRO", "Ex.: Floresta"),
+            ("Cidade", "CERTIFICADO_CIDADE", "Ex.: Belo Horizonte"),
+            ("UF", "CERTIFICADO_UF", "Ex.: MG"),
             ("CEP", "CERTIFICADO_CEP", "00000-000"),
         ]
 
@@ -1696,6 +1847,34 @@ class Telas:
             text="Usar modelo Articulada",
             variable=variaveis["CERTIFICADO_ARTICULADA"],
         ).pack(anchor="w")
+
+        linha_pasta_documentos = ctk.CTkFrame(corpo_certificado, fg_color="transparent")
+        linha_pasta_documentos.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 0))
+        linha_pasta_documentos.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            linha_pasta_documentos,
+            text="Pasta dos documentos",
+            font=FONT_SMALL,
+            text_color=TEXT_MUTED,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        campo_pasta_documentos = estilizar_entry(
+            ctk.CTkEntry(
+                linha_pasta_documentos,
+                placeholder_text=r"Ex.: Z:\Certificados e Carteirinhas\A.R.V\Hudson Rafael dos Santos",
+            )
+        )
+        campo_pasta_documentos.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        campos["DOCUMENTOS_PASTA"] = campo_pasta_documentos
+
+        botao_escolher_pasta = ctk.CTkButton(linha_pasta_documentos, text="Escolher", width=92, height=32)
+        estilizar_botao(botao_escolher_pasta)
+        botao_escolher_pasta.grid(row=1, column=1, sticky="ew")
+
+        botao_abrir_pasta = ctk.CTkButton(linha_pasta_documentos, text="Abrir", width=92, height=32)
+        estilizar_botao(botao_abrir_pasta)
+        botao_abrir_pasta.grid(row=1, column=2, sticky="ew", padx=(8, 0))
 
         estado = {"selecionado": None, "df_filtrado": pd.DataFrame()}
 
@@ -1762,6 +1941,7 @@ class Telas:
                     dados["CERTIFICADO_MODELO"] = valor
                 else:
                     dados[chave] = valor
+            dados["DOCUMENTOS_PASTA"] = str(dados.get("DOCUMENTOS_PASTA", "")).strip().strip('"')
             if not dados["CODIGO"]:
                 dados["CODIGO"] = gerar_codigo()
             dados["DATA_CADASTRO"] = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -1796,6 +1976,8 @@ class Telas:
                 "CERTIFICADO_RUA": "Informe a rua para o certificado.",
                 "CERTIFICADO_NUMERO": "Informe o numero para o certificado.",
                 "CERTIFICADO_BAIRRO": "Informe o bairro para o certificado.",
+                "CERTIFICADO_CIDADE": "Informe a cidade para o certificado.",
+                "CERTIFICADO_UF": "Informe a UF para o certificado.",
                 "CERTIFICADO_CEP": "Informe o CEP para o certificado.",
             }
             for chave, mensagem in obrigatorios.items():
@@ -1894,28 +2076,113 @@ class Telas:
             linha = df.loc[int(selecionado)]
             for chave, campo in campos.items():
                 preencher_widget(campo, linha.get(chave, ""))
+            if not str(linha.get("DOCUMENTOS_PASTA", "")).strip():
+                preencher_widget(campos["DOCUMENTOS_PASTA"], _inferir_pasta_documentos(linha))
             preencher_variavel("CERTIFICADO_IMPRIMIR_CPF", linha.get("CERTIFICADO_IMPRIMIR_CPF", "SIM"))
             preencher_variavel("CERTIFICADO_ARTICULADA", linha.get("CERTIFICADO_MODELO", "TESOURA"))
 
-        def salvar():
-            dados = coletar_dados()
-            if not validar(dados):
-                return
+        def obter_certificado_selecionado():
+            indice = estado["selecionado"]
+            if indice is None:
+                messagebox.showwarning("Aviso", "Selecione um registro para salvar ou imprimir o certificado.")
+                return None, None
 
             df = carregar_df()
-            if estado["selecionado"] is None:
+            if indice not in df.index:
+                messagebox.showwarning("Aviso", "O registro selecionado nao esta mais disponivel.")
+                return None, None
+
+            dados = coletar_dados()
+            if not validar_certificado(dados):
+                return None, None
+            return dados, indice
+
+        def salvar(validar_campos=False, manter_formulario=False):
+            dados = coletar_dados()
+            if validar_campos and not validar(dados):
+                return
+
+            if not any(str(valor).strip() for chave, valor in dados.items() if chave not in {"CODIGO", "DATA_CADASTRO", "DATA_ATUALIZACAO"}):
+                messagebox.showwarning("Aviso", "Preencha ao menos um dado antes de salvar.")
+                return None
+
+            df = carregar_df()
+            indice_original = estado["selecionado"]
+
+            def _houve_alteracao_em_relacao_ao_selecionado():
+                if indice_original is None or indice_original not in df.index:
+                    return False
+                linha_original = df.loc[indice_original]
+                campos_comparacao = [
+                    "CODIGO",
+                    "NOME",
+                    "CPF",
+                    "EMPRESA",
+                    "FUNCAO",
+                    "TREINAMENTO",
+                    "CARGA_HORARIA",
+                    "INSTRUTOR",
+                    "DATA_EMISSAO",
+                    "VALIDADE",
+                    "RESPONSAVEL",
+                    "OBS",
+                    "CERTIFICADO_RUA",
+                    "CERTIFICADO_NUMERO",
+                    "CERTIFICADO_BAIRRO",
+                    "CERTIFICADO_CIDADE",
+                    "CERTIFICADO_UF",
+                    "CERTIFICADO_CEP",
+                    "DOCUMENTOS_PASTA",
+                    "CERTIFICADO_IMPRIMIR_CPF",
+                    "CERTIFICADO_MODELO",
+                ]
+                for chave in campos_comparacao:
+                    valor_novo = str(dados.get(chave, "")).strip()
+                    valor_original = str(linha_original.get(chave, "")).strip()
+                    if valor_novo != valor_original:
+                        return True
+                return False
+
+            criar_novo_a_partir_do_modelo = _houve_alteracao_em_relacao_ao_selecionado()
+            novo_registro = indice_original is None or criar_novo_a_partir_do_modelo
+
+            if novo_registro:
+                if indice_original is not None and indice_original in df.index:
+                    codigo_original = str(df.loc[indice_original, "CODIGO"]).strip()
+                    if not str(dados.get("CODIGO", "")).strip() or str(dados.get("CODIGO", "")).strip() == codigo_original:
+                        dados["CODIGO"] = gerar_codigo()
                 df = pd.concat([df, pd.DataFrame([dados])], ignore_index=True)
+                indice_salvo = len(df) - 1
             else:
-                indice = estado["selecionado"]
+                indice = indice_original
+                dados["DATA_CADASTRO"] = str(df.loc[indice, "DATA_CADASTRO"]).strip() or dados["DATA_CADASTRO"]
                 for chave, valor in dados.items():
                     df.loc[indice, chave] = valor
+                indice_salvo = indice
 
             self.banco.escrever_aba("TREINAMENTOS", df)
             atualizar_tabela()
-            limpar_formulario()
-            messagebox.showinfo("Sucesso", "Registro da carteirinha salvo com sucesso.")
+            estado["selecionado"] = indice_salvo
+            if not manter_formulario:
+                if novo_registro:
+                    adicionar_nova(limpar_campos=False)
+                else:
+                    limpar_formulario()
+            return dados, indice_salvo
+
+        def salvar_cadastro():
+            salvo = salvar(validar_campos=True, manter_formulario=True)
+            if not salvo:
+                return
+            messagebox.showinfo("Sucesso", "Cadastro da carteirinha salvo com sucesso.")
+
+        def visualizar_cadastros():
+            self.visualizar("TREINAMENTOS")
 
         def _selecionar_caminho_pdf(dados):
+            pasta_documentos = _preparar_pasta_documentos(dados)
+            if pasta_documentos:
+                return os.path.join(pasta_documentos, _nome_pdf_carteirinha(dados))
             nome_padrao = f"carteirinha_{dados['NOME'].replace(' ', '_')}_{datetime.now():%d-%m-%Y}.pdf"
             return filedialog.asksaveasfilename(
                 defaultextension=".pdf",
@@ -1925,6 +2192,9 @@ class Telas:
             )
 
         def _selecionar_caminho_certificado_word(dados):
+            pasta_documentos = _preparar_pasta_documentos(dados)
+            if pasta_documentos:
+                return os.path.join(pasta_documentos, _nome_word_certificado(dados))
             nome_padrao = f"certificado_{dados['NOME'].replace(' ', '_')}_{datetime.now():%d-%m-%Y}.docx"
             return filedialog.asksaveasfilename(
                 defaultextension=".docx",
@@ -1932,6 +2202,59 @@ class Telas:
                 filetypes=[("Documento do Word", "*.docx")],
                 title="Salvar certificado Word como",
             )
+
+        def _inferir_pasta_documentos(origem):
+            for chave in ("DOCUMENTOS_PASTA", "PDF_CAMINHO", "CERTIFICADO_WORD_CAMINHO", "CERTIFICADO_PDF_CAMINHO"):
+                valor = str(origem.get(chave, "")).strip()
+                if not valor:
+                    continue
+                caminho = Path(valor)
+                return str(caminho.parent if caminho.suffix else caminho)
+            return ""
+
+        def _preparar_pasta_documentos(dados):
+            pasta_base = str(dados.get("DOCUMENTOS_PASTA", "")).strip().strip('"')
+            if not pasta_base:
+                return ""
+            pasta = Path(pasta_base)
+            empresa = str(dados.get("EMPRESA", "")).strip()
+            nome = str(dados.get("NOME", "")).strip()
+            partes_existentes = {parte.strip().upper() for parte in pasta.parts}
+            if empresa and empresa.upper() not in partes_existentes:
+                pasta = pasta / empresa
+            partes_existentes = {parte.strip().upper() for parte in pasta.parts}
+            if nome and nome.upper() not in partes_existentes:
+                pasta = pasta / nome
+            try:
+                Path(pasta).mkdir(parents=True, exist_ok=True)
+            except Exception as erro:
+                messagebox.showerror("Erro", f"Nao foi possivel preparar a pasta dos documentos:\n{erro}")
+                return ""
+            return str(pasta)
+
+        def selecionar_pasta_documentos():
+            pasta_atual = str(campos["DOCUMENTOS_PASTA"].get() or "").strip().strip('"')
+            pasta = filedialog.askdirectory(
+                title="Escolha a pasta para salvar e abrir os documentos",
+                initialdir=pasta_atual if pasta_atual else None,
+            )
+            if not pasta:
+                return
+            preencher_widget(campos["DOCUMENTOS_PASTA"], pasta)
+
+        def abrir_pasta_documentos():
+            pasta = str(campos["DOCUMENTOS_PASTA"].get() or "").strip().strip('"')
+            if not pasta and estado["selecionado"] is not None:
+                df = carregar_df()
+                if estado["selecionado"] in df.index:
+                    pasta = _inferir_pasta_documentos(df.loc[estado["selecionado"]])
+            if not pasta:
+                messagebox.showwarning("Aviso", "Escolha ou informe a pasta dos documentos primeiro.")
+                return
+            if not Path(pasta).exists():
+                messagebox.showwarning("Aviso", f"A pasta informada nao existe:\n{pasta}")
+                return
+            os.startfile(pasta)
 
         def _salvar_df(df):
             self.banco.escrever_aba("TREINAMENTOS", df)
@@ -2028,31 +2351,12 @@ class Telas:
             for chave, valor in dados.items():
                 df.loc[indice, chave] = valor
 
-            caminho_pdf = str(df.loc[indice, "PDF_CAMINHO"]).strip() if "PDF_CAMINHO" in df.columns else ""
-            if not caminho_pdf:
-                caminho_pdf = _selecionar_caminho_pdf(dados)
-                if not caminho_pdf:
-                    return
-
             try:
-                df.loc[indice, "PDF_CAMINHO"] = caminho_pdf
-                df.loc[indice, "MODELO_VERSAO"] = MODELO_CARTEIRINHA_VERSAO
                 df.loc[indice, "DATA_ATUALIZACAO"] = datetime.now().strftime("%d/%m/%Y %H:%M")
                 _salvar_df(df)
-                caminho_final = _gerar_pdf_com_tratamento(dados, caminho_pdf)
-                if not caminho_final:
-                    return
-                if caminho_final != caminho_pdf:
-                    df = carregar_df()
-                    if indice in df.index:
-                        df.loc[indice, "PDF_CAMINHO"] = caminho_final
-                        df.loc[indice, "MODELO_VERSAO"] = MODELO_CARTEIRINHA_VERSAO
-                        df.loc[indice, "DATA_ATUALIZACAO"] = datetime.now().strftime("%d/%m/%Y %H:%M")
-                        _salvar_df(df)
-                os.startfile(caminho_final)
                 messagebox.showinfo(
                     "Sucesso",
-                    "Carteirinha atualizada com sucesso.\n\nO PDF foi refeito com o modelo atual.",
+                    "Cadastro atualizado com sucesso.\n\nUse 'Salvar PDF' quando quiser refazer a carteirinha.",
                 )
             except Exception as erro:
                 messagebox.showerror("Erro", f"Erro ao atualizar a carteirinha:\n{erro}")
@@ -2070,9 +2374,27 @@ class Telas:
             limpar_formulario()
             messagebox.showinfo("Sucesso", "Carteirinha excluida.")
 
-        def adicionar_nova():
+        def adicionar_nova(limpar_campos=True):
+            valores_preservados = {
+                "EMPRESA": valor_campo(campos["EMPRESA"]),
+                "TREINAMENTO": valor_campo(campos["TREINAMENTO"]),
+                "CARGA_HORARIA": valor_campo(campos["CARGA_HORARIA"]),
+                "INSTRUTOR": valor_campo(campos["INSTRUTOR"]),
+                "RESPONSAVEL": valor_campo(campos["RESPONSAVEL"]),
+                "DOCUMENTOS_PASTA": valor_campo(campos["DOCUMENTOS_PASTA"]),
+                "CERTIFICADO_RUA": valor_campo(campos["CERTIFICADO_RUA"]),
+                "CERTIFICADO_NUMERO": valor_campo(campos["CERTIFICADO_NUMERO"]),
+                "CERTIFICADO_BAIRRO": valor_campo(campos["CERTIFICADO_BAIRRO"]),
+                "CERTIFICADO_CIDADE": valor_campo(campos["CERTIFICADO_CIDADE"]),
+                "CERTIFICADO_UF": valor_campo(campos["CERTIFICADO_UF"]),
+                "CERTIFICADO_CEP": valor_campo(campos["CERTIFICADO_CEP"]),
+            }
             limpar_formulario()
             campos["CODIGO"].insert(0, gerar_codigo())
+            if limpar_campos:
+                for chave, valor in valores_preservados.items():
+                    if valor:
+                        preencher_widget(campos[chave], valor)
             campos["NOME"].focus()
 
         def gerar_pdf():
@@ -2081,6 +2403,11 @@ class Telas:
 
             if not validar(dados):
                 return
+
+            salvo = salvar(validar_campos=False, manter_formulario=True)
+            if not salvo:
+                return
+            dados, indice = salvo
 
             caminho = _selecionar_caminho_pdf(dados)
             if not caminho:
@@ -2094,37 +2421,37 @@ class Telas:
             except Exception as erro:
                 messagebox.showerror("Erro", f"Erro ao gerar a carteirinha:\n{erro}")
 
-        def gerar_word_certificado():
-            dados = coletar_dados()
-            indice = estado["selecionado"]
-
-            if not validar_certificado(dados):
+        def salvar_certificado():
+            dados, indice = obter_certificado_selecionado()
+            if dados is None:
                 return
+
+            salvo = salvar(validar_campos=False, manter_formulario=True)
+            if not salvo:
+                return
+            dados, indice = salvo
 
             caminho = _selecionar_caminho_certificado_word(dados)
             if not caminho:
                 return
 
             try:
-                caminho_final = _gerar_e_registrar_certificado_word(dados, caminho, indice=indice, abrir_arquivo=True)
+                caminho_final = _gerar_e_registrar_certificado_word(dados, caminho, indice=indice, abrir_arquivo=False)
                 if not caminho_final:
                     return
-                messagebox.showinfo("Sucesso", f"Certificado Word gerado com sucesso.\n\nArquivo: {caminho_final}")
+                messagebox.showinfo("Sucesso", f"Certificado salvo com sucesso.\n\nArquivo: {caminho_final}")
             except Exception as erro:
-                messagebox.showerror("Erro", f"Erro ao gerar o certificado:\n{erro}")
+                messagebox.showerror("Erro", f"Erro ao salvar o certificado:\n{erro}")
 
         def imprimir_certificado():
-            dados = coletar_dados()
-            indice = estado["selecionado"]
-
-            if not validar_certificado(dados):
+            dados, indice = obter_certificado_selecionado()
+            if dados is None:
                 return
 
             caminho_word = ""
-            if indice is not None:
-                df = carregar_df()
-                if indice in df.index and "CERTIFICADO_WORD_CAMINHO" in df.columns:
-                    caminho_word = str(df.loc[indice, "CERTIFICADO_WORD_CAMINHO"]).strip()
+            df = carregar_df()
+            if indice in df.index and "CERTIFICADO_WORD_CAMINHO" in df.columns:
+                caminho_word = str(df.loc[indice, "CERTIFICADO_WORD_CAMINHO"]).strip()
 
             if not caminho_word:
                 caminho_word = _selecionar_caminho_certificado_word(dados)
@@ -2145,6 +2472,71 @@ class Telas:
             codigo = str(dados.get("CODIGO", "")).strip().replace(" ", "_")
             base = f"carteirinha_{codigo}_{nome}".strip("_")
             return f"{base or 'carteirinha'}.pdf"
+
+        def _nome_word_certificado(dados):
+            nome = str(dados.get("NOME", "")).strip().replace(" ", "_")
+            codigo = str(dados.get("CODIGO", "")).strip().replace(" ", "_")
+            base = f"certificado_{codigo}_{nome}".strip("_")
+            return f"{base or 'certificado'}.docx"
+
+        def importar_carteirinhas_da_pasta():
+            pasta_raiz = str(campos["DOCUMENTOS_PASTA"].get() or "").strip().strip('"')
+            if not pasta_raiz:
+                pasta_raiz = filedialog.askdirectory(title="Escolha a pasta raiz das carteirinhas")
+                if not pasta_raiz:
+                    return
+                preencher_widget(campos["DOCUMENTOS_PASTA"], pasta_raiz)
+
+            arquivos_pdf = listar_pdfs_carteirinhas(pasta_raiz)
+            if not arquivos_pdf:
+                messagebox.showwarning("Aviso", f"Nenhum PDF encontrado em:\n{pasta_raiz}")
+                return
+
+            df = carregar_df()
+            quantidade = 0
+            erros = []
+
+            for caminho_pdf in arquivos_pdf:
+                try:
+                    dados_importados = extrair_dados_carteirinha_pdf(caminho_pdf)
+                    dados_importados["DATA_ATUALIZACAO"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    if not str(dados_importados.get("DATA_CADASTRO", "")).strip():
+                        dados_importados["DATA_CADASTRO"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+                    codigo = str(dados_importados.get("CODIGO", "")).strip()
+                    pdf_caminho = str(dados_importados.get("PDF_CAMINHO", "")).strip()
+                    filtro = pd.Series([False] * len(df), index=df.index)
+                    if codigo:
+                        filtro = filtro | (df["CODIGO"].astype(str).str.strip() == codigo)
+                    if pdf_caminho:
+                        filtro = filtro | (df["PDF_CAMINHO"].astype(str).str.strip() == pdf_caminho)
+
+                    encontrados = df.index[filtro].tolist()
+                    if encontrados:
+                        indice = encontrados[-1]
+                        dados_importados["DATA_CADASTRO"] = str(df.loc[indice, "DATA_CADASTRO"]).strip() or dados_importados["DATA_CADASTRO"]
+                        for chave, valor in dados_importados.items():
+                            if chave in df.columns:
+                                df.loc[indice, chave] = valor
+                    else:
+                        df = pd.concat([df, pd.DataFrame([dados_importados])], ignore_index=True)
+                    quantidade += 1
+                except Exception as erro:
+                    erros.append(f"{caminho_pdf}: {erro}")
+
+            self.banco.escrever_aba("TREINAMENTOS", df)
+            atualizar_tabela()
+
+            if erros:
+                detalhes = "\n".join(erros[:5])
+                extra = "\n..." if len(erros) > 5 else ""
+                messagebox.showwarning(
+                    "Importacao parcial",
+                    f"{quantidade} carteirinha(s) importada(s) de:\n{pasta_raiz}\n\nFalhas:\n{detalhes}{extra}",
+                )
+                return
+
+            messagebox.showinfo("Sucesso", f"{quantidade} carteirinha(s) importada(s) de:\n{pasta_raiz}")
 
         def exportar_filtro():
             df_filtrado = estado["df_filtrado"].copy()
@@ -2268,38 +2660,31 @@ class Telas:
         botao_filtrar.pack(side="left", padx=(0, 8))
         adicionar_tooltip(botao_filtrar, "Filtrar")
 
-        botao_novo = ctk.CTkButton(acoes_tabela, text="+", command=adicionar_nova, width=36, height=32)
-        estilizar_botao(botao_novo)
-        botao_novo.pack(side="left", padx=(0, 8))
-        adicionar_tooltip(botao_novo, "Adicionar carteira")
-
         botao_pdf = ctk.CTkButton(acoes_tabela, text="PDF", command=gerar_pdf, width=54, height=32)
         estilizar_botao(botao_pdf)
         botao_pdf.pack(side="left", padx=(0, 8))
-        adicionar_tooltip(botao_pdf, "Salvar PDF")
+        adicionar_tooltip(botao_pdf, "Gerar carteirinha")
 
-        botao_certificado = ctk.CTkButton(acoes_tabela, text="Word", command=gerar_word_certificado, width=58, height=32)
+        botao_certificado = ctk.CTkButton(acoes_tabela, text="Cert", command=salvar_certificado, width=58, height=32)
         estilizar_botao(botao_certificado)
         botao_certificado.pack(side="left", padx=(0, 8))
-        adicionar_tooltip(botao_certificado, "Gerar certificado Word")
+        adicionar_tooltip(botao_certificado, "Gerar certificado")
 
-        botao_lote = ctk.CTkButton(acoes_tabela, text="Lote", command=exportar_filtro, width=60, height=32)
-        estilizar_botao(botao_lote)
-        botao_lote.pack(side="left")
-        adicionar_tooltip(botao_lote, "Exportar filtro")
+        botao_escolher_pasta.configure(command=selecionar_pasta_documentos)
+        adicionar_tooltip(botao_escolher_pasta, "Escolher a pasta de documentos")
+        botao_abrir_pasta.configure(command=abrir_pasta_documentos)
+        adicionar_tooltip(botao_abrir_pasta, "Abrir a pasta configurada")
 
         self._acoes_horizontal(
             lateral,
             [
-                ("Adicionar carteira", adicionar_nova, False),
-                ("Salvar registro", salvar, True),
-                ("Atualizar carteira", atualizar_carteirinha, False),
-                ("Salvar PDF", gerar_pdf, False),
-                ("Gerar certificado Word", gerar_word_certificado, False),
-                ("Imprimir certificado", imprimir_certificado, False),
-                ("Exportar filtro", exportar_filtro, False),
+                ("Salvar cadastro", salvar_cadastro, True),
+                ("Visualizar dados", visualizar_cadastros, False),
+                ("Gerar carteirinha", gerar_pdf, True),
+                ("Gerar certificado", salvar_certificado, False),
+                ("Filtrar", abrir_filtro, False),
                 ("Excluir", excluir, False),
-                ("Limpar", limpar_formulario, False),
+                ("Nova ficha", adicionar_nova, False),
                 ("Voltar", self.voltar_menu, False),
             ],
             largura_botao=160,
@@ -2334,6 +2719,374 @@ class Telas:
             pagina,
             [("Relatorio geral", self.relatorios.relatorio_manutencoes, True), ("Voltar", self.voltar_menu, False)],
         )
+
+    def tela_relatorio_tecnico_word(self):
+        estado = criar_dados_padrao_relatorio_tecnico()
+        pagina = self._nova_pagina(
+            "Laudo tecnico Word",
+            "Monte o laudo de liberacao com base no modelo Word e exporte para a pasta escolhida.",
+        )
+
+        topo = ctk.CTkFrame(pagina, fg_color="transparent")
+        topo.pack(fill="x", pady=(0, 16))
+        topo.grid_columnconfigure((0, 1, 2), weight=1)
+
+        def total_itens_inspecionados():
+            return sum(len(secao["itens"]) for secao in estado["itens_inspecionados"])
+
+        def total_itens_ok():
+            return sum(1 for secao in estado["itens_inspecionados"] for item in secao["itens"] if item["ok"])
+
+        def total_checklist():
+            return sum(1 for secao in estado["verificacao_diaria"] for item in secao["itens"] if item["ok"])
+
+        def atualizar_cards():
+            for widget in topo.winfo_children():
+                widget.destroy()
+            cards = [
+                ("Checks tecnicos", f"{total_itens_ok()}/{total_itens_inspecionados()}", ACCENT),
+                ("Checklist diario", str(total_checklist()), SUCCESS),
+                ("Modelo Word", "modelo.docx", TEXT),
+            ]
+            for indice, (titulo, valor, cor) in enumerate(cards):
+                criar_cartao_info(topo, titulo, valor, cor).grid(
+                    row=0, column=indice, sticky="nsew", padx=(0 if indice == 0 else 10, 0)
+                )
+
+        conteudo = ctk.CTkFrame(pagina, fg_color="transparent")
+        conteudo.pack(fill="both", expand=True)
+
+        lateral = ctk.CTkFrame(conteudo, fg_color="transparent", width=360)
+        lateral.pack(side="left", fill="y", padx=(0, 16))
+        lateral.pack_propagate(False)
+
+        direita = ctk.CTkScrollableFrame(conteudo, fg_color="transparent", corner_radius=0)
+        direita.pack(side="right", fill="both", expand=True)
+
+        _, painel_edicao = criar_secao(
+            lateral,
+            "Edicao",
+            "Dados pequenos e checks ficam em pop-up. Textos maiores podem ser alterados separadamente.",
+            expand=True,
+        )
+
+        resumo_texto = ctk.CTkTextbox(
+            direita,
+            fg_color=BG_CARD,
+            text_color=TEXT,
+            border_width=1,
+            border_color=BORDER,
+            height=540,
+        )
+        resumo_texto.pack(fill="both", expand=True)
+
+        def atualizar_resumo():
+            identificacao = estado["identificacao"]
+            resumo_texto.configure(state="normal")
+            resumo_texto.delete("1.0", "end")
+            resumo_texto.insert(
+                "end",
+                (
+                    "Identificacao\n"
+                    f"Data: {identificacao['data_inspecao']}\n"
+                    f"Horario: {identificacao['horario']}\n"
+                    f"Local: {identificacao['local']}\n"
+                    f"Equipamento: {identificacao['equipamento']} ({identificacao['sigla']})\n"
+                    f"Tipo: {identificacao['tipo']}\n"
+                    f"Fabricante: {identificacao['fabricante']}\n"
+                    f"Modelo: {identificacao['modelo']}\n"
+                    f"Serie: {identificacao['numero_serie']}\n"
+                    f"Patrimonio: {identificacao['patrimonio']}\n"
+                    f"Alimentacao: {identificacao['alimentacao']}\n\n"
+                    "Objetivo\n"
+                    f"{estado['objetivo']}\n\n"
+                    "Metodologia\n"
+                    f"{estado['metodologia']}\n\n"
+                    "Especificacoes\n"
+                    f"Deslocamento: {estado['especificacoes']['deslocamento']}\n"
+                    f"Limite: {estado['especificacoes']['limite_inclinacao']}\n"
+                    f"Riscos: {estado['especificacoes']['riscos_operacionais']}\n\n"
+                    "Responsabilidades do usuario\n"
+                    + "\n".join(f"- {item}" for item in estado["responsabilidades_usuario"])
+                    + "\n\nChecklist diario selecionado\n"
+                    + "\n".join(
+                        f"- {item['texto']}"
+                        for secao in estado["verificacao_diaria"]
+                        for item in secao["itens"]
+                        if item["ok"]
+                    )
+                ),
+            )
+            resumo_texto.configure(state="disabled")
+            atualizar_cards()
+
+        def popup_texto_simples(titulo, chave, descricao):
+            janela = self._abrir_popup_relatorio_tecnico(titulo, "900x620")
+            pagina_popup = criar_pagina(janela)
+            criar_cabecalho(pagina_popup, titulo, descricao)
+            editor = ctk.CTkTextbox(
+                pagina_popup,
+                fg_color=BG_CARD,
+                text_color=TEXT,
+                border_width=1,
+                border_color=BORDER,
+            )
+            editor.pack(fill="both", expand=True, padx=6, pady=(0, 16))
+            editor.insert("1.0", estado[chave])
+
+            def salvar_texto():
+                estado[chave] = editor.get("1.0", "end").strip()
+                atualizar_resumo()
+                janela.destroy()
+
+            self._acoes_horizontal(
+                pagina_popup,
+                [
+                    ("Salvar", salvar_texto, True),
+                    ("Restaurar padrao", lambda: (editor.delete("1.0", "end"), editor.insert("1.0", criar_dados_padrao_relatorio_tecnico()[chave])), False),
+                ],
+            )
+
+        def popup_especificacoes():
+            janela = self._abrir_popup_relatorio_tecnico("Especificacoes tecnicas", "980x760")
+            pagina_popup = criar_pagina(janela)
+            criar_cabecalho(pagina_popup, "Especificacoes tecnicas", "Edite os textos tecnicos e as responsabilidades do usuario.")
+            area = ctk.CTkScrollableFrame(pagina_popup, fg_color="transparent", corner_radius=0)
+            area.pack(fill="both", expand=True)
+            area.grid_columnconfigure((0, 1), weight=1)
+
+            campos = {}
+            configuracoes = [
+                ("Deslocamento do equipamento", "deslocamento"),
+                ("Limite operacional", "limite_inclinacao"),
+                ("Riscos operacionais", "riscos_operacionais"),
+                ("Sistema de indicacao de nivelamento", "indicacao_nivelamento"),
+                ("Responsabilidades operacionais", "responsabilidades_operacionais"),
+                ("Advertencia tecnica formal", "advertencia_formal"),
+            ]
+            for indice, (label, chave) in enumerate(configuracoes):
+                frame = ctk.CTkFrame(area, fg_color="transparent")
+                frame.grid(row=indice // 2, column=indice % 2, sticky="nsew", padx=8, pady=8)
+                ctk.CTkLabel(frame, text=label, font=FONT_LABEL, text_color=TEXT).pack(anchor="w", pady=(0, 6))
+                caixa = ctk.CTkTextbox(frame, height=120, fg_color=BG_CARD, text_color=TEXT, border_width=1, border_color=BORDER)
+                caixa.pack(fill="both", expand=True)
+                caixa.insert("1.0", estado["especificacoes"][chave])
+                campos[chave] = caixa
+
+            ctk.CTkLabel(area, text="Responsabilidades do usuario", font=FONT_LABEL, text_color=TEXT).grid(
+                row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(16, 6)
+            )
+            responsabilidades = ctk.CTkTextbox(
+                area,
+                height=160,
+                fg_color=BG_CARD,
+                text_color=TEXT,
+                border_width=1,
+                border_color=BORDER,
+            )
+            responsabilidades.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
+            responsabilidades.insert("1.0", "\n".join(estado["responsabilidades_usuario"]))
+
+            def salvar_especificacoes():
+                for chave, caixa in campos.items():
+                    estado["especificacoes"][chave] = caixa.get("1.0", "end").strip()
+                estado["responsabilidades_usuario"] = [
+                    linha.strip() for linha in responsabilidades.get("1.0", "end").splitlines() if linha.strip()
+                ]
+                atualizar_resumo()
+                janela.destroy()
+
+            self._acoes_horizontal(
+                pagina_popup,
+                [
+                    ("Salvar", salvar_especificacoes, True),
+                    ("Fechar", janela.destroy, False),
+                ],
+            )
+
+        def popup_dados_checks():
+            janela = self._abrir_popup_relatorio_tecnico("Dados e checks do laudo", "1180x760")
+            pagina_popup = criar_pagina(janela)
+            criar_cabecalho(
+                pagina_popup,
+                "Dados e checks do laudo",
+                "Altere identificacao, data e marcacoes de inspecao e checklist diario.",
+            )
+            seletor_abas = ctk.CTkFrame(pagina_popup, fg_color="transparent")
+            seletor_abas.pack(fill="x", pady=(0, 10))
+
+            area_abas = ctk.CTkFrame(
+                pagina_popup,
+                fg_color=BG_PANEL,
+                corner_radius=18,
+                border_width=1,
+                border_color=BORDER,
+            )
+            area_abas.pack(fill="both", expand=True, pady=(0, 12))
+            painel_atual = {"widget": None}
+            botoes_abas = {}
+
+            for indice, nome in enumerate(("Identificacao", "Itens", "Checklist")):
+                botao_aba = ctk.CTkButton(seletor_abas, text=nome, width=140)
+                estilizar_botao(botao_aba, primario=indice == 0)
+                botao_aba.pack(side="left", padx=(0, 8))
+                botoes_abas[nome] = botao_aba
+
+            campos = {}
+            checklist_vars = []
+            configuracao = [
+                ("Data da inspecao", "data_inspecao"),
+                ("Horario", "horario"),
+                ("Local", "local"),
+                ("Equipamento", "equipamento"),
+                ("Tipo", "tipo"),
+                ("Sigla", "sigla"),
+                ("Fabricante", "fabricante"),
+                ("Modelo", "modelo"),
+                ("Numero de serie", "numero_serie"),
+                ("Patrimonio", "patrimonio"),
+                ("Tipo de alimentacao", "alimentacao"),
+                ("Data do responsavel tecnico", "data"),
+            ]
+
+            def novo_painel():
+                if painel_atual["widget"] is not None:
+                    painel_atual["widget"].destroy()
+                painel = ctk.CTkScrollableFrame(area_abas, fg_color="transparent", corner_radius=0)
+                painel.pack(fill="both", expand=True, padx=4, pady=4)
+                painel_atual["widget"] = painel
+                return painel
+
+            def render_identificacao():
+                painel = novo_painel()
+                painel.grid_columnconfigure((0, 1), weight=1)
+                campos.clear()
+                for indice, (label, chave) in enumerate(configuracao):
+                    row = indice // 2
+                    col = indice % 2
+                    widget = estilizar_entry(ctk.CTkEntry(painel))
+                    valor = estado["responsavel_tecnico"]["data"] if chave == "data" else estado["identificacao"][chave]
+                    widget.insert(0, valor)
+                    self._campo(painel, row, col, label, widget)
+                    campos[chave] = widget
+
+            def render_itens():
+                painel = novo_painel()
+                ctk.CTkLabel(painel, text="Itens inspecionados", font=FONT_HEADING, text_color=TEXT).pack(
+                    anchor="w", padx=8, pady=(8, 12)
+                )
+                for secao in estado["itens_inspecionados"]:
+                    card = ctk.CTkFrame(painel, fg_color=BG_PANEL, corner_radius=16, border_width=1, border_color=BORDER)
+                    card.pack(fill="x", padx=8, pady=8)
+                    ctk.CTkLabel(card, text=secao["titulo"], font=FONT_LABEL, text_color=TEXT).pack(
+                        anchor="w", padx=14, pady=(12, 8)
+                    )
+                    for item in secao["itens"]:
+                        linha_item = ctk.CTkFrame(card, fg_color="transparent")
+                        linha_item.pack(fill="x", padx=12, pady=4)
+                        estado_visual = ctk.StringVar(value="OK" if item["ok"] else "X")
+                        botao = ctk.CTkButton(linha_item, textvariable=estado_visual, width=44, height=30)
+                        estilizar_botao(botao, primario=item["ok"])
+
+                        def alternar(_item=item, _var=estado_visual, _botao=botao):
+                            _item["ok"] = not _item["ok"]
+                            _var.set("OK" if _item["ok"] else "X")
+                            estilizar_botao(_botao, primario=_item["ok"])
+
+                        botao.configure(command=alternar)
+                        botao.pack(side="left", padx=(0, 10))
+                        ctk.CTkLabel(
+                            linha_item,
+                            text=item["texto"],
+                            text_color=TEXT,
+                            font=FONT_SMALL,
+                            wraplength=820,
+                            justify="left",
+                        ).pack(side="left", fill="x", expand=True)
+
+            def render_checklist():
+                painel = novo_painel()
+                checklist_vars.clear()
+                ctk.CTkLabel(
+                    painel, text="Verificacao diaria obrigatoria", font=FONT_HEADING, text_color=TEXT
+                ).pack(anchor="w", padx=8, pady=(8, 12))
+                for secao in estado["verificacao_diaria"]:
+                    card = ctk.CTkFrame(painel, fg_color=BG_PANEL, corner_radius=16, border_width=1, border_color=BORDER)
+                    card.pack(fill="x", padx=8, pady=8)
+                    ctk.CTkLabel(card, text=secao["titulo"], font=FONT_LABEL, text_color=TEXT).pack(
+                        anchor="w", padx=14, pady=(12, 8)
+                    )
+                    for item in secao["itens"]:
+                        var = ctk.BooleanVar(value=item["ok"])
+                        ctk.CTkCheckBox(card, text=item["texto"], variable=var).pack(anchor="w", padx=14, pady=4)
+                        checklist_vars.append((item, var))
+
+            renderizadores = {
+                "Identificacao": render_identificacao,
+                "Itens": render_itens,
+                "Checklist": render_checklist,
+            }
+
+            def mostrar_aba(nome):
+                renderizadores[nome]()
+                for chave, botao in botoes_abas.items():
+                    estilizar_botao(botao, primario=chave == nome)
+
+            for nome, botao in botoes_abas.items():
+                botao.configure(command=lambda valor=nome: mostrar_aba(valor))
+
+            def salvar_popup():
+                for chave, campo in campos.items():
+                    valor = campo.get().strip()
+                    if chave == "data":
+                        estado["responsavel_tecnico"]["data"] = valor
+                    else:
+                        estado["identificacao"][chave] = valor
+                for item, var in checklist_vars:
+                    item["ok"] = bool(var.get())
+                atualizar_resumo()
+                janela.destroy()
+
+            self._acoes_horizontal(
+                pagina_popup,
+                [
+                    ("Salvar", salvar_popup, True),
+                    ("Fechar", janela.destroy, False),
+                ],
+                largura_botao=160,
+                colunas=2,
+            )
+            mostrar_aba("Identificacao")
+
+        def exportar_word():
+            pasta = filedialog.askdirectory(title="Escolha a pasta para salvar o laudo tecnico")
+            if not pasta:
+                return
+            nome_base = estado["identificacao"]["patrimonio"].strip().replace(" ", "_") or "laudo_tecnico"
+            caminho = os.path.join(pasta, f"laudo_tecnico_{nome_base}.docx")
+            try:
+                caminho_final = gerar_relatorio_tecnico_word(estado, caminho)
+                os.startfile(caminho_final)
+                messagebox.showinfo("Sucesso", f"Laudo tecnico gerado com sucesso.\n\nArquivo: {caminho_final}")
+            except Exception as erro:
+                messagebox.showerror("Erro", f"Erro ao gerar o laudo tecnico:\n{erro}")
+
+        self._acoes_horizontal(
+            painel_edicao,
+            [
+                ("Dados e checks", popup_dados_checks, True),
+                ("Objetivo", lambda: popup_texto_simples("Objetivo da inspecao", "objetivo", "Edite o objetivo conforme a necessidade."), False),
+                ("Metodologia", lambda: popup_texto_simples("Metodologia da inspecao", "metodologia", "Edite a metodologia conforme a necessidade."), False),
+                ("Especificacoes", popup_especificacoes, False),
+                ("Restaurar padrao", lambda: (estado.clear(), estado.update(criar_dados_padrao_relatorio_tecnico()), atualizar_resumo()), False),
+                ("Exportar Word", exportar_word, False),
+                ("Voltar", self.voltar_menu, False),
+            ],
+            largura_botao=160,
+            colunas=2,
+        )
+
+        atualizar_resumo()
 
     def tela_filtro_relatorio(self, categoria):
         pagina = self._nova_pagina(f"Relatorio de {categoria.lower()}", "Defina os filtros antes de exportar o PDF.")

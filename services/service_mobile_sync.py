@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import socket
 import threading
@@ -17,11 +16,55 @@ from utils.caminhos import caminho_mobile_importados, caminho_mobile_pendencias
 HOST_PADRAO = "0.0.0.0"
 PORTA_PADRAO = 8765
 
+FOTO_CAMPOS = [
+    ("foto_roda_traseira", "Foto roda traseira"),
+    ("foto_roda_dianteira", "Foto roda dianteira"),
+    ("foto_compartimento_bateria_esquerda", "Foto compartimento bateria esquerda"),
+    ("foto_parte_tras_maquina", "Foto parte de tras da maquina"),
+    ("foto_bateria_lado_direito", "Foto bateria lado direito"),
+    ("foto_bateria_lado_esquerda", "Foto bateria lado esquerda"),
+    ("foto_compartimento_bateria_direita", "Foto compartimento bateria direita"),
+    ("foto_lateral_direita", "Foto lateral direita"),
+    ("foto_compartimento_manual", "Foto compartimento do manual"),
+    ("foto_painel_cesto", "Foto painel de controle cesto"),
+    ("foto_painel_solo", "Foto painel de controle solo"),
+    ("foto_parte_tras", "Foto parte de tras"),
+    ("foto_frente", "Foto frente"),
+    ("foto_parte_interna_cesto", "Foto parte interna cesto"),
+    ("foto_horimetro", "Foto horimetro"),
+    ("foto_cilindro", "Foto cilindro"),
+    ("foto_lateral_esquerda", "Foto lateral esquerda"),
+]
+FOTO_LABELS = dict(FOTO_CAMPOS)
+
 _SERVIDOR = None
 _THREAD = None
+_PORTA_ATIVA = None
 
 
-HTML_FORM = """<!doctype html>
+def _renderizar_campos_fotos() -> str:
+    blocos = []
+    for campo, titulo in FOTO_CAMPOS:
+        blocos.append(
+            f"""
+        <div class="photo-card">
+          <div class="photo-head">
+            <div>
+              <div class="photo-title">{titulo}</div>
+              <div class="photo-sub">Use o botao para abrir a camera do celular. Voce pode repetir quantas vezes precisar.</div>
+            </div>
+            <span class="photo-count" data-count="{campo}">0 foto(s)</span>
+          </div>
+          <div class="photo-actions">
+            <button type="button" class="sec" onclick="adicionarFoto(__INDEX__, '{campo}', '{titulo}')">Adicionar foto</button>
+          </div>
+          <div class="capture-list" id="lista-{campo}-__INDEX__"></div>
+        </div>"""
+        )
+    return "".join(blocos)
+
+
+HTML_FORM = f"""<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
@@ -55,7 +98,7 @@ HTML_FORM = """<!doctype html>
         linear-gradient(180deg, #f8fbff 0%, #eaf2ff 100%);
       color: var(--text);
     }}
-    .wrap {{ max-width: 820px; margin: 0 auto; padding: 18px 14px 132px; }}
+    .wrap {{ max-width: 880px; margin: 0 auto; padding: 18px 14px 132px; }}
     .hero {{
       background: linear-gradient(135deg, #10213f 0%, #1a2f56 100%);
       color: #fff;
@@ -228,6 +271,12 @@ HTML_FORM = """<!doctype html>
       font-size: 14px;
     }}
     .ghost {{ background: #e8eef7; color: var(--secondary); }}
+    .mini {{
+      width: auto;
+      padding: 10px 12px;
+      font-size: 12px;
+      border-radius: 12px;
+    }}
     .actions {{
       position: fixed;
       left: 0;
@@ -263,24 +312,85 @@ HTML_FORM = """<!doctype html>
       display: flex;
       flex-direction: column;
     }}
-    .field-soft {{
-      background: #f9fbfe;
-      border: 1px solid #e3ebf6;
-      border-radius: 18px;
-      padding: 12px;
-    }}
     .divider {{
       height: 1px;
       background: linear-gradient(90deg, transparent, #dce6f2, transparent);
       margin: 16px 0 2px;
     }}
+    .photos-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .photo-card {{
+      background: #f9fbfe;
+      border: 1px solid #dce6f2;
+      border-radius: 18px;
+      padding: 14px;
+    }}
+    .photo-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 10px;
+    }}
+    .photo-title {{
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--secondary);
+    }}
+    .photo-sub {{
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      margin-top: 4px;
+    }}
+    .photo-count {{
+      border-radius: 999px;
+      background: #eef3fa;
+      border: 1px solid #dce6f2;
+      color: var(--secondary);
+      font-size: 11px;
+      font-weight: 800;
+      padding: 7px 10px;
+      white-space: nowrap;
+    }}
+    .capture-list {{
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }}
+    .capture-row {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: #fff;
+      border: 1px solid #dce6f2;
+      border-radius: 14px;
+      padding: 10px 12px;
+    }}
+    .capture-name {{
+      font-size: 12px;
+      color: var(--text);
+      line-height: 1.4;
+      word-break: break-word;
+    }}
+    .capture-empty {{
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 10px;
+    }}
+    .hidden-input {{ display: none; }}
     @media (max-width: 640px) {{
-      .grid, .summary {{ grid-template-columns: 1fr; }}
+      .grid, .summary, .photos-grid {{ grid-template-columns: 1fr; }}
       .item-top {{ align-items: flex-start; flex-direction: column; }}
       .wrap {{ padding-bottom: 148px; }}
       .card {{ padding: 18px 16px; }}
       .item {{ padding: 16px; }}
       .actions {{ padding-left: 12px; padding-right: 12px; }}
+      .photo-head {{ flex-direction: column; }}
     }}
   </style>
 </head>
@@ -291,7 +401,7 @@ HTML_FORM = """<!doctype html>
         <div>
           <div class="badge">Coleta Mobile</div>
           <h1>Envio de manutencoes</h1>
-          <p>Preencha um ou varios formularios, tire as fotos no celular e envie tudo para o sistema desktop.</p>
+          <p>Preencha um ou varios formularios, abra a camera do celular em cada categoria e envie tudo para o sistema desktop.</p>
         </div>
       </div>
       <div class="summary">
@@ -306,7 +416,7 @@ HTML_FORM = """<!doctype html>
       </div>
     </div>
     <div class="card">
-      <p class="lead">Cada formulario pode representar um veiculo, equipamento ou manutencao diferente no mesmo envio.</p>
+      <p class="lead">Cada formulario pode representar um veiculo, equipamento ou manutencao diferente no mesmo envio. Em cada bloco de foto, toque em adicionar para abrir a camera.</p>
       <form id="mobile-form" method="post" action="/upload" enctype="multipart/form-data">
         <input type="hidden" name="item_count" id="item_count" value="1">
         <div id="items"></div>
@@ -324,7 +434,7 @@ HTML_FORM = """<!doctype html>
       <div class="item-top">
         <div>
           <div class="item-title">Formulario __NUM__</div>
-          <div class="item-sub">Preencha os dados e anexe as fotos deste item.</div>
+          <div class="item-sub">Preencha os dados e capture as fotos por categoria.</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <span class="pill">#__NUM__</span>
@@ -354,9 +464,33 @@ HTML_FORM = """<!doctype html>
             <option>ELETRICA</option>
           </select>
         </div>
+        <div class="field">
+          <label>Contrato</label>
+          <input name="contrato____INDEX__" placeholder="Ex.: 17918">
+        </div>
         <div class="full field">
           <label>Descricao</label>
           <input name="descricao____INDEX__" required placeholder="Descreva a manutencao">
+        </div>
+        <div class="field">
+          <label>Cliente</label>
+          <input name="cliente____INDEX__" placeholder="Nome do cliente">
+        </div>
+        <div class="field">
+          <label>Obra</label>
+          <input name="obra____INDEX__" placeholder="Nome da obra">
+        </div>
+        <div class="field">
+          <label>Equipamento</label>
+          <input name="equipamento____INDEX__" placeholder="Ex.: Plataforma aerea articulada">
+        </div>
+        <div class="field">
+          <label>Modelo</label>
+          <input name="modelo____INDEX__" placeholder="Ex.: GS32MD">
+        </div>
+        <div class="field">
+          <label>Serie</label>
+          <input name="serie____INDEX__" placeholder="Numero de serie">
         </div>
         <div class="field">
           <label>Marca</label>
@@ -398,40 +532,93 @@ HTML_FORM = """<!doctype html>
           <label>Detalhe</label>
           <textarea name="detalhe____INDEX__" placeholder="Observacoes da manutencao"></textarea>
         </div>
-        <div class="full field field-soft">
-          <label>Fotos</label>
-          <input type="file" name="fotos____INDEX__" accept="image/*" multiple>
-          <div class="hint">Selecione varias imagens da galeria ou da camera. Em muitos celulares, remover o modo direto da camera melhora o envio multiplo.</div>
-        </div>
+      </div>
+      <div class="hint">Cada toque em adicionar foto abre a camera do celular. Repita a acao para anexar mais de uma imagem na mesma categoria.</div>
+      <div class="photos-grid">
+        {_renderizar_campos_fotos()}
       </div>
     </div>
   </template>
   <script>
     let contador = 0;
-    function render() {
-      document.querySelectorAll('.item').forEach((el, i) => {
-        el.querySelector('.item-title').textContent = `Formulario ${i + 1}`;
-        el.querySelector('.item-sub').textContent = `Preencha os dados e anexe as fotos deste item.`;
-        el.querySelector('.pill').textContent = `#${i + 1}`;
-      });
+
+    function render() {{
+      document.querySelectorAll('.item').forEach((el, i) => {{
+        el.querySelector('.item-title').textContent = `Formulario ${{i + 1}}`;
+        el.querySelector('.item-sub').textContent = 'Preencha os dados e capture as fotos por categoria.';
+        el.querySelector('.pill').textContent = `#${{i + 1}}`;
+      }});
       const total = document.querySelectorAll('.item').length;
       document.getElementById('item_count').value = total;
       document.getElementById('total-formularios').textContent = total;
-    }
-    function adicionarItem() {
+    }}
+
+    function atualizarContador(campo, indice) {{
+      const lista = document.getElementById(`lista-${{campo}}-${{indice}}`);
+      const total = lista ? lista.querySelectorAll('.capture-row').length : 0;
+      const badge = document.querySelector(`[data-count="${{campo}}"]`);
+      const card = document.querySelector(`.item[data-index="${{indice}}"] [data-count="${{campo}}"]`);
+      if (card) {{
+        card.textContent = `${{total}} foto(s)`;
+      }}
+    }}
+
+    function removerCaptura(botao, campo, indice) {{
+      const linha = botao.closest('.capture-row');
+      if (linha) {{
+        linha.remove();
+      }}
+      atualizarContador(campo, indice);
+    }}
+
+    function adicionarFoto(indice, campo, titulo) {{
+      const lista = document.getElementById(`lista-${{campo}}-${{indice}}`);
+      if (!lista) return;
+
+      const uid = `${{Date.now()}}_${{Math.random().toString(16).slice(2)}}`;
+      const linha = document.createElement('div');
+      linha.className = 'capture-row';
+      linha.innerHTML = `
+        <div class="capture-name">Abrindo camera...</div>
+        <button type="button" class="sec ghost mini">Remover</button>
+        <input class="hidden-input" type="file" accept="image/*" capture="environment" name="${{campo}}__${{indice}}">
+      `;
+
+      const input = linha.querySelector('input');
+      const nome = linha.querySelector('.capture-name');
+      const remover = linha.querySelector('button');
+
+      remover.onclick = () => removerCaptura(remover, campo, indice);
+      input.addEventListener('change', () => {{
+        const arquivo = input.files && input.files[0];
+        if (!arquivo) {{
+          linha.remove();
+        }} else {{
+          nome.textContent = `${{titulo}}: ${{arquivo.name || 'imagem capturada'}}`;
+        }}
+        atualizarContador(campo, indice);
+      }});
+
+      lista.appendChild(linha);
+      input.click();
+    }}
+
+    function adicionarItem() {{
       const tpl = document.getElementById('item-template').innerHTML
-        .replaceAll('__INDEX__', String(contador))
-        .replaceAll('__NUM__', String(contador + 1));
+        .split('__INDEX__').join(String(contador))
+        .split('__NUM__').join(String(contador + 1));
       document.getElementById('items').insertAdjacentHTML('beforeend', tpl);
       contador += 1;
       render();
-    }
-    function removerItem(botao) {
+    }}
+
+    function removerItem(botao) {{
       const items = document.querySelectorAll('.item');
       if (items.length <= 1) return;
       botao.closest('.item').remove();
       render();
-    }
+    }}
+
     adicionarItem();
   </script>
 </body>
@@ -460,24 +647,31 @@ def obter_url_mobile(porta: int = PORTA_PADRAO) -> str:
     return f"http://{obter_ip_local()}:{porta}"
 
 
-def _organizar_itens(campos: dict[str, str], arquivos: list[tuple[str, bytes]]) -> tuple[list[dict], list[str]]:
+def _novo_item_mobile() -> dict:
+    return {"dados": {}, "fotos": [], "fotos_nomeadas": {}}
+
+
+def _organizar_itens(campos: dict[str, str], arquivos: list[tuple[str, str, bytes]]) -> tuple[list[dict], list[tuple[str, str, bytes]]]:
     itens: dict[str, dict] = {}
-    fotos_livres: list[str] = []
+    fotos_livres: list[tuple[str, str, bytes]] = []
 
     for chave, valor in campos.items():
         if "__" in chave:
             nome, indice = chave.rsplit("__", 1)
-            item = itens.setdefault(indice, {"dados": {}, "fotos": []})
+            item = itens.setdefault(indice, _novo_item_mobile())
             item["dados"][nome] = valor
 
     for campo_nome, nome_arquivo, conteudo in arquivos:
-        if "__" in campo_nome:
-            campo, indice = campo_nome.rsplit("__", 1)
-            if campo == "fotos":
-                item = itens.setdefault(indice, {"dados": {}, "fotos": []})
-                item["fotos"].append((campo_nome, nome_arquivo, conteudo))
-            else:
-                fotos_livres.append((campo_nome, nome_arquivo, conteudo))
+        if "__" not in campo_nome:
+            fotos_livres.append((campo_nome, nome_arquivo, conteudo))
+            continue
+
+        campo, indice = campo_nome.rsplit("__", 1)
+        item = itens.setdefault(indice, _novo_item_mobile())
+        if campo in FOTO_LABELS:
+            item["fotos_nomeadas"].setdefault(campo, []).append((campo_nome, nome_arquivo, conteudo))
+        elif campo == "fotos":
+            item["fotos"].append((campo_nome, nome_arquivo, conteudo))
         else:
             fotos_livres.append((campo_nome, nome_arquivo, conteudo))
 
@@ -485,6 +679,13 @@ def _organizar_itens(campos: dict[str, str], arquivos: list[tuple[str, bytes]]) 
     for indice in sorted(itens.keys(), key=lambda valor: int(valor) if str(valor).isdigit() else str(valor)):
         lista.append(itens[indice])
     return lista, fotos_livres
+
+
+def _nome_arquivo_foto(campo: str, nome_original: str, sequencia: int) -> str:
+    origem = Path(nome_original)
+    sufixo = origem.suffix.lower() or ".jpg"
+    base = _slug(origem.stem)
+    return f"{_slug(campo)}_{sequencia:02d}_{base}{sufixo}"
 
 
 def _salvar_payload(campos: dict[str, str], arquivos: list[tuple[str, str, bytes]], origem: str | None = None) -> str:
@@ -507,13 +708,33 @@ def _salvar_payload(campos: dict[str, str], arquivos: list[tuple[str, str, bytes
 
     itens_salvos = []
     for indice, item in enumerate(itens):
-        pasta_item = pasta / f"item_{indice+1:02d}"
-        fotos_item = [salvar_arquivo(nome, conteudo, pasta_item / "fotos") for _campo, nome, conteudo in item["fotos"]]
+        pasta_item = pasta / f"item_{indice + 1:02d}"
+        todas_fotos = []
+
+        for posicao, (_campo, nome, conteudo) in enumerate(item["fotos"], start=1):
+            rel = salvar_arquivo(_nome_arquivo_foto("foto_geral", nome, posicao), conteudo, pasta_item / "fotos" / "geral")
+            titulo = f"Foto adicional {posicao}"
+            todas_fotos.append({"campo": "foto_geral", "titulo": titulo, "caminho": rel})
+
+        fotos_nomeadas_salvas = []
+        for campo, arquivos_categoria in item["fotos_nomeadas"].items():
+            titulo_base = FOTO_LABELS.get(campo, campo.replace("_", " ").title())
+            pasta_categoria = pasta_item / "fotos" / _slug(campo)
+            arquivos_salvos = []
+            for posicao, (_campo, nome, conteudo) in enumerate(arquivos_categoria, start=1):
+                rel = salvar_arquivo(_nome_arquivo_foto(campo, nome, posicao), conteudo, pasta_categoria)
+                titulo = titulo_base if len(arquivos_categoria) == 1 else f"{titulo_base} {posicao}"
+                registro_foto = {"campo": campo, "titulo": titulo, "caminho": rel}
+                arquivos_salvos.append(registro_foto)
+                todas_fotos.append(registro_foto)
+            fotos_nomeadas_salvas.append({"campo": campo, "titulo": titulo_base, "arquivos": arquivos_salvos})
+
         itens_salvos.append(
             {
                 "ordem": indice + 1,
                 "dados": item["dados"],
-                "fotos": fotos_item,
+                "fotos": todas_fotos,
+                "fotos_nomeadas": fotos_nomeadas_salvas,
             }
         )
 
@@ -648,24 +869,26 @@ class _MobileHandler(BaseHTTPRequestHandler):
 
 
 def iniciar_servidor_mobile(porta: int = PORTA_PADRAO) -> str:
-    global _SERVIDOR, _THREAD
+    global _SERVIDOR, _THREAD, _PORTA_ATIVA
     if _SERVIDOR is not None:
-        return obter_url_mobile(porta)
+        return obter_url_mobile(_PORTA_ATIVA or porta)
 
     _SERVIDOR = ThreadingHTTPServer((HOST_PADRAO, porta), _MobileHandler)
     _THREAD = threading.Thread(target=_SERVIDOR.serve_forever, daemon=True)
     _THREAD.start()
+    _PORTA_ATIVA = porta
     return obter_url_mobile(porta)
 
 
 def parar_servidor_mobile() -> None:
-    global _SERVIDOR, _THREAD
+    global _SERVIDOR, _THREAD, _PORTA_ATIVA
     if _SERVIDOR is None:
         return
     _SERVIDOR.shutdown()
     _SERVIDOR.server_close()
     _SERVIDOR = None
     _THREAD = None
+    _PORTA_ATIVA = None
 
 
 def servidor_mobile_ativo() -> bool:
